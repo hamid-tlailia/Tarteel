@@ -45,6 +45,6 @@ export const useProgressStore = create<ProgressState>()(
         return streak
       },
     }),
-    { name: 'tarteel-progress' },
+    { name: 'wartil-progress' },
   ),
 )

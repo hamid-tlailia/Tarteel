@@ -16,7 +16,7 @@ export function Layout() {
         <div className="mx-auto flex max-w-6xl items-center justify-between gap-4 px-4 py-3">
           <NavLink to="/" className="flex items-center gap-2 text-xl font-black text-brand-700 dark:text-brand-300">
             <span aria-hidden>﴾</span>
-            ترتيل
+            ورتل
           </NavLink>
           <nav className="flex flex-wrap items-center gap-1 text-sm">
             {NAV_ITEMS.map((item) => (
