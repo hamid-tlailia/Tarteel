@@ -12,6 +12,10 @@ type IncomingMessage =
   | { type: 'transcribe'; audio: Float32Array; requestId: number }
 
 type ProgressInfo = { status: string; file?: string; progress?: number; loaded?: number; total?: number }
+export interface TimedChunk {
+  text: string
+  timestamp: [number, number | null]
+}
 
 self.onmessage = async (event: MessageEvent<IncomingMessage>) => {
   const msg = event.data
@@ -34,13 +38,31 @@ self.onmessage = async (event: MessageEvent<IncomingMessage>) => {
   if (msg.type === 'transcribe') {
     try {
       const transcriber = await (transcriberPromise ?? Promise.reject(new Error('النموذج غير محمّل بعد')))
-      const output = await transcriber(msg.audio, {
-        language: 'arabic',
-        task: 'transcribe',
-        chunk_length_s: 30,
-      })
-      const text = Array.isArray(output) ? output.map((o) => o.text).join(' ') : output.text
-      self.postMessage({ type: 'result', text, requestId: msg.requestId })
+
+      // Word-level timestamps power the acoustic (madd-duration) checks, but not every
+      // exported model/build supports `return_timestamps: 'word'` — fall back gracefully
+      // to plain transcription (text-only comparison still works) if it throws.
+      let output
+      let hasTimestamps = true
+      try {
+        output = await transcriber(msg.audio, {
+          language: 'arabic',
+          task: 'transcribe',
+          chunk_length_s: 30,
+          return_timestamps: 'word',
+        })
+      } catch {
+        hasTimestamps = false
+        output = await transcriber(msg.audio, {
+          language: 'arabic',
+          task: 'transcribe',
+          chunk_length_s: 30,
+        })
+      }
+
+      const result = Array.isArray(output) ? output[0] : output
+      const chunks: TimedChunk[] = hasTimestamps && Array.isArray(result?.chunks) ? result.chunks : []
+      self.postMessage({ type: 'result', text: result.text, chunks, requestId: msg.requestId })
     } catch (err) {
       self.postMessage({ type: 'error', error: (err as Error).message, requestId: msg.requestId })
     }

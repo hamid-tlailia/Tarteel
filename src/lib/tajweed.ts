@@ -248,6 +248,16 @@ export function segmentsToWords(segments: TajweedSegment[]): WordWithRules[] {
   return words
 }
 
+const LOW_SALIENCE_RULES = new Set<TajweedRuleId>(['ham_wasl', 'laam_shamsiyah', 'slnt'])
+
+/** Picks the most visually informative rule to represent a word carrying several
+ * (e.g. hamzat-wasl + laam-shamsiyah), preferring madd/qalqalah/ghunnah/noon-meem
+ * rules over the mostly-structural/silent ones. */
+export function primaryRule(rules: TajweedRuleId[]): TajweedRuleId | undefined {
+  if (rules.length === 0) return undefined
+  return rules.find((r) => !LOW_SALIENCE_RULES.has(r)) ?? rules[0]
+}
+
 export const TAJWEED_CATEGORIES: { id: TajweedRuleInfo['category']; nameAr: string }[] = [
   { id: 'noon_meem', nameAr: 'أحكام النون الساكنة والتنوين والميم الساكنة' },
   { id: 'madd', nameAr: 'أحكام المدود' },

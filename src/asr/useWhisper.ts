@@ -1,6 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
+import type { TimedChunk } from './whisper.worker'
 
 export type ModelStatus = 'idle' | 'loading' | 'ready' | 'error'
+
+export interface TranscribeResult {
+  text: string
+  chunks: TimedChunk[]
+}
 
 interface ProgressInfo {
   status: string
@@ -17,7 +23,7 @@ export function useWhisper() {
   const [progress, setProgress] = useState(0)
   const [progressLabel, setProgressLabel] = useState('')
   const [error, setError] = useState<string | null>(null)
-  const pendingRef = useRef<{ resolve: (text: string) => void; reject: (err: Error) => void } | null>(null)
+  const pendingRef = useRef<{ resolve: (result: TranscribeResult) => void; reject: (err: Error) => void } | null>(null)
   const requestIdRef = useRef(0)
 
   useEffect(() => {
@@ -44,7 +50,7 @@ export function useWhisper() {
         setStatus('ready')
         setProgress(100)
       } else if (data.type === 'result') {
-        pendingRef.current?.resolve(data.text as string)
+        pendingRef.current?.resolve({ text: data.text as string, chunks: (data.chunks as TimedChunk[]) ?? [] })
         pendingRef.current = null
       } else if (data.type === 'error') {
         setError(data.error)
@@ -57,7 +63,7 @@ export function useWhisper() {
     worker.postMessage({ type: 'load' })
   }, [status])
 
-  const transcribe = useCallback((audio: Float32Array): Promise<string> => {
+  const transcribe = useCallback((audio: Float32Array): Promise<TranscribeResult> => {
     return new Promise((resolve, reject) => {
       const requestId = ++requestIdRef.current
       pendingRef.current = { resolve, reject }

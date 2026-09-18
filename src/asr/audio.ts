@@ -40,6 +40,21 @@ export class MicRecorder {
     this.mediaRecorder.start()
   }
 
+  /** Flushes whatever has been recorded so far into a Blob, without stopping the recording.
+   * Used to poll a "live" snapshot of the audio while the reciter is still speaking. */
+  snapshot(): Promise<Blob | null> {
+    const recorder = this.mediaRecorder
+    if (!recorder || recorder.state !== 'recording') return Promise.resolve(null)
+    return new Promise((resolve) => {
+      const onData = () => {
+        recorder.removeEventListener('dataavailable', onData)
+        resolve(this.chunks.length > 0 ? new Blob(this.chunks, { type: recorder.mimeType || 'audio/webm' }) : null)
+      }
+      recorder.addEventListener('dataavailable', onData)
+      recorder.requestData()
+    })
+  }
+
   stop(): Promise<Blob> {
     return new Promise((resolve, reject) => {
       const recorder = this.mediaRecorder
