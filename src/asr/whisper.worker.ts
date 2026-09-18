@@ -3,7 +3,14 @@ import { pipeline, env, type AutomaticSpeechRecognitionPipeline } from '@hugging
 
 env.allowLocalModels = false
 
-const MODEL_ID = 'onnx-community/whisper-base'
+// A generic Whisper model has essentially no idea what Quranic recitation sounds like
+// (it's melodic/elongated speech very unlike what Whisper's Arabic training data covers),
+// which is why it can output something as unrelated as "نحن أخذ" for "لا أقسم بهذا البلد".
+// This is an ONNX export (community-converted, not an official onnx-community/Xenova
+// release) of tarteel-ai/whisper-base-ar-quran — the same architecture, fine-tuned on
+// actual Quran recitation audio. If it turns out to perform worse in practice, revert
+// this to 'onnx-community/whisper-base'.
+const MODEL_ID = 'An0xity/whisper-base-ar-quran-onnx-timestamped'
 
 let transcriberPromise: Promise<AutomaticSpeechRecognitionPipeline> | null = null
 
