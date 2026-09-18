@@ -1,18 +1,30 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+import clsx from 'clsx'
 import { fetchSurahAyahs, fetchSurahList } from '../api/quran'
 import type { Ayah, SurahMeta } from '../types/quran'
 import { TajweedText } from '../components/TajweedText'
+import { PracticeIcon } from '../components/NavIcons'
+import { StopIcon } from '../components/RecorderIcons'
 import { primaryRule, segmentsToWords, TAJWEED_RULE_MAP, type WordWithRules } from '../lib/tajweed'
 import { normalizeArabic } from '../lib/arabicText'
 import { alignWords, scoreAlignment, type AlignedWord } from '../lib/alignment'
 import { detectMaddDurationAlerts, type AcousticAlert } from '../lib/acousticTajweed'
+import { collapseRepeatedWords } from '../lib/repetition'
 import { useWhisper } from '../asr/useWhisper'
-import { decodeToPcm16k, MicRecorder } from '../asr/audio'
+import { decodeToPcm16k, MicRecorder, trimSilence } from '../asr/audio'
 import type { TimedChunk } from '../asr/whisper.worker'
 import { useProgressStore } from '../store/progressStore'
 
 const LIVE_TICK_MS = 3000
-const MIN_LIVE_SAMPLES = 8000 // ~0.5s at 16kHz — skip transcribing near-empty snapshots
+const MIN_SPEECH_SAMPLES = 8000 // ~0.5s at 16kHz, after silence trimming
+const MIN_NEW_SPEECH_SAMPLES = 4000 // skip a live tick if there's no meaningful new speech yet
+
+interface AyahRange {
+  ayahNumber: number
+  numberInSurah: number
+  start: number
+  end: number
+}
 
 function hypWordsFromResult(text: string, chunks: TimedChunk[]) {
   if (chunks.length > 0) {
@@ -29,9 +41,17 @@ function vibrate(pattern: number | number[]) {
   }
 }
 
-/** Renders the recited text with each word colored: its own tajweed color when recited
- * correctly, amber when textually correct but flagged by the acoustic madd check, red when
- * wrong/missing, and a neutral tone for correct words that carry no tajweed rule. */
+function AyahBadge({ n }: { n: number }) {
+  return (
+    <span className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full border border-brand-300 text-[10px] font-bold text-brand-700 dark:border-brand-700 dark:text-brand-300">
+      {n}
+    </span>
+  )
+}
+
+/** Renders one ayah's recited words: its own tajweed color when correct, orange when the
+ * madd was dropped entirely, amber when just short, red when wrong/missing, blue for extra
+ * words the reciter said that aren't in the text. */
 function ComparedWords({
   aligned,
   referenceWords,
@@ -68,9 +88,10 @@ function ComparedWords({
           return (
             <span
               key={i}
-              className={`rounded bg-red-100 px-1.5 py-0.5 text-red-700 dark:bg-red-900/30 dark:text-red-200 ${
-                w.status === 'missing' ? 'line-through decoration-2' : ''
-              }`}
+              className={clsx(
+                'rounded bg-red-100 px-1.5 py-0.5 text-red-700 dark:bg-red-900/30 dark:text-red-200',
+                w.status === 'missing' && 'line-through decoration-2',
+              )}
               title={w.status === 'substituted' ? `سمعت: ${w.hypWord}` : 'لم تُنطق'}
             >
               {displayWord}
@@ -79,11 +100,21 @@ function ComparedWords({
         }
 
         if (acoustic) {
+          const severe = acoustic.severity === 'severe'
           return (
             <span
               key={i}
-              className="rounded bg-amber-100 px-1.5 py-0.5 text-amber-800 underline decoration-wavy decoration-amber-500 dark:bg-amber-900/30 dark:text-amber-200"
-              title={`⏱️ المدّ يبدو قصيرًا (${TAJWEED_RULE_MAP[acoustic.rule].nameAr})`}
+              className={clsx(
+                'rounded px-1.5 py-0.5 underline decoration-wavy',
+                severe
+                  ? 'bg-orange-100 text-orange-900 decoration-orange-600 dark:bg-orange-900/30 dark:text-orange-200'
+                  : 'bg-amber-100 text-amber-800 decoration-amber-500 dark:bg-amber-900/30 dark:text-amber-200',
+              )}
+              title={
+                severe
+                  ? `⏱️ المدّ لم يُمدّ إطلاقًا (${TAJWEED_RULE_MAP[acoustic.rule].nameAr})`
+                  : `⏱️ المدّ يبدو أقصر من المطلوب (${TAJWEED_RULE_MAP[acoustic.rule].nameAr})`
+              }
             >
               {displayWord}
             </span>
@@ -117,6 +148,7 @@ export function PracticePage() {
   const recorderRef = useRef<MicRecorder | null>(null)
   const liveTimerRef = useRef<number | null>(null)
   const liveBusyRef = useRef(false)
+  const lastLiveSampleCountRef = useRef(0)
   const seenIssueKeysRef = useRef<Set<string>>(new Set())
   const whisper = useWhisper()
   const addAttempt = useProgressStore((s) => s.addAttempt)
@@ -142,8 +174,34 @@ export function PracticePage() {
     [ayahs, fromAyah, toAyah],
   )
 
-  const referenceWords = useMemo(() => selectedAyahs.flatMap((a) => segmentsToWords(a.segments)), [selectedAyahs])
+  const { referenceWords, ayahRanges } = useMemo(() => {
+    const words: WordWithRules[] = []
+    const ranges: AyahRange[] = []
+    for (const a of selectedAyahs) {
+      const w = segmentsToWords(a.segments)
+      ranges.push({ ayahNumber: a.number, numberInSurah: a.numberInSurah, start: words.length, end: words.length + w.length })
+      words.push(...w)
+    }
+    return { referenceWords: words, ayahRanges: ranges }
+  }, [selectedAyahs])
+
   const referenceNormalized = useMemo(() => referenceWords.map((w) => normalizeArabic(w.word)), [referenceWords])
+
+  // Buckets `aligned` back into per-ayah slices so the live view can reveal one ayah at a
+  // time: an ayah the reciter hasn't reached yet gets an empty bucket (shown as a blank
+  // placeholder) instead of a wall of false "missing" words.
+  const alignedByAyah = useMemo(() => {
+    if (!aligned || ayahRanges.length === 0) return ayahRanges.map(() => [] as AlignedWord[])
+    const buckets: AlignedWord[][] = ayahRanges.map(() => [])
+    let ayahIdx = 0
+    for (const w of aligned) {
+      if (w.refIndex !== null) {
+        while (ayahIdx < ayahRanges.length - 1 && w.refIndex >= ayahRanges[ayahIdx].end) ayahIdx++
+      }
+      buckets[Math.min(ayahIdx, buckets.length - 1)].push(w)
+    }
+    return buckets
+  }, [aligned, ayahRanges])
 
   const meta = surahs.find((s) => s.number === surahNumber)
   const score = aligned ? scoreAlignment(aligned) : null
@@ -169,6 +227,7 @@ export function PracticePage() {
     setHypothesis(null)
     setIsFinal(false)
     seenIssueKeysRef.current = new Set()
+    lastLiveSampleCountRef.current = 0
   }
 
   // Selecting the ayah range with two independent selects: moving "from" forward pulls "to"
@@ -191,17 +250,22 @@ export function PracticePage() {
   }
 
   function applyResult(text: string, resultChunks: TimedChunk[], final: boolean) {
-    setHypothesis(text)
-    setChunks(resultChunks)
-    const { normalized } = hypWordsFromResult(text, resultChunks)
-    const result = alignWords(referenceNormalized, normalized)
+    const { raw, normalized } = hypWordsFromResult(text, resultChunks)
+    // Defend against ASR hallucination loops (e.g. the same word repeated dozens of times
+    // over a silent stretch) before they ever reach the aligner.
+    const collapsed = collapseRepeatedWords(raw, normalized, resultChunks)
+    const displayText = collapsed.raw.join(' ') || text
+
+    setHypothesis(displayText)
+    setChunks(collapsed.chunks)
+    const result = alignWords(referenceNormalized, collapsed.normalized)
     setAligned(result)
     setIsFinal(final)
 
-    const acoustic = detectMaddDurationAlerts(result, referenceWords, resultChunks)
+    const acoustic = detectMaddDurationAlerts(result, referenceWords, collapsed.chunks)
     const issueKeys = new Set<string>([
       ...result.filter((w) => w.status !== 'correct' && w.refIndex !== null).map((w) => `word:${w.refIndex}`),
-      ...acoustic.map((a) => `madd:${a.refIndex}:${a.rule}`),
+      ...acoustic.map((a) => `madd:${a.refIndex}:${a.rule}:${a.severity}`),
     ])
     let hasNewIssue = false
     for (const key of issueKeys) {
@@ -222,8 +286,11 @@ export function PracticePage() {
       const blob = await recorder.snapshot()
       if (!blob) return
       const pcm = await decodeToPcm16k(blob)
-      if (pcm.length < MIN_LIVE_SAMPLES) return
-      const { text, chunks: resultChunks } = await whisper.transcribe(pcm)
+      const trimmed = trimSilence(pcm)
+      if (trimmed.length < MIN_SPEECH_SAMPLES) return
+      if (trimmed.length - lastLiveSampleCountRef.current < MIN_NEW_SPEECH_SAMPLES) return
+      lastLiveSampleCountRef.current = trimmed.length
+      const { text, chunks: resultChunks } = await whisper.transcribe(trimmed)
       applyResult(text, resultChunks, false)
     } catch {
       // Transient decode/inference hiccups during live polling are non-fatal — just skip this tick.
@@ -254,7 +321,12 @@ export function PracticePage() {
     try {
       const blob = await recorderRef.current.stop()
       const pcm = await decodeToPcm16k(blob)
-      const { text, chunks: resultChunks } = await whisper.transcribe(pcm)
+      const trimmed = trimSilence(pcm)
+      if (trimmed.length < MIN_SPEECH_SAMPLES) {
+        setMicError('لم يتم رصد صوت واضح. حاول التسجيل مرة أخرى بصوت أعلى وأقرب للميكروفون.')
+        return
+      }
+      const { text, chunks: resultChunks } = await whisper.transcribe(trimmed)
       const result = applyResult(text, resultChunks, true)
       const s = scoreAlignment(result)
       if (meta) {
@@ -284,8 +356,8 @@ export function PracticePage() {
       <div>
         <h1 className="text-2xl font-black text-emerald-900 dark:text-brand-50">التلاوة والتصحيح الصوتي</h1>
         <p className="mt-1 text-sm text-emerald-900/70 dark:text-brand-100/70">
-          اختر مقطعًا من القرآن، سجّل تلاوتك، وستظهر معاينة مباشرة تحت النص الصحيح كل بضع ثوانٍ أثناء القراءة —
-          بمقارنة صوتية كاملة داخل متصفحك دون رفع صوتك إلى أي خادم.
+          اختر مقطعًا من القرآن، سجّل تلاوتك، وستنكشف كل آية بمقارنتها الحيّة تحت النص الصحيح كلما وصلت إليها أثناء
+          القراءة — بمقارنة صوتية كاملة داخل متصفحك دون رفع صوتك إلى أي خادم.
         </p>
       </div>
 
@@ -334,17 +406,20 @@ export function PracticePage() {
         </label>
       </div>
 
-      <div className="space-y-3 rounded-2xl border border-brand-200/70 bg-white/70 p-5 dark:border-brand-900/50 dark:bg-white/5">
+      <div className="space-y-4 rounded-2xl border border-brand-200/70 bg-white/70 p-5 dark:border-brand-900/50 dark:bg-white/5">
         <div>
           <h2 className="mb-2 text-sm font-bold text-brand-700 dark:text-brand-300">النص المرجعي</h2>
           <div className="space-y-2">
             {selectedAyahs.map((a) => (
-              <TajweedText key={a.number} segments={a.segments} className="font-quran text-2xl" />
+              <div key={a.number} className="flex items-start gap-2">
+                <TajweedText segments={a.segments} className="font-quran flex-1 text-2xl" />
+                <AyahBadge n={a.numberInSurah} />
+              </div>
             ))}
           </div>
         </div>
 
-        {aligned && (
+        {(recording || aligned) && (
           <div className="border-t border-brand-100 pt-3 dark:border-brand-900/50">
             <h2 className="mb-2 flex items-center gap-2 text-sm font-bold text-brand-700 dark:text-brand-300">
               ما تقرأه الآن
@@ -354,7 +429,26 @@ export function PracticePage() {
                 </span>
               )}
             </h2>
-            <ComparedWords aligned={aligned} referenceWords={referenceWords} acousticAlerts={acousticAlerts} />
+            <div className="space-y-3">
+              {ayahRanges.map((r, idx) => {
+                const bucket = alignedByAyah[idx] ?? []
+                const reached = bucket.some((w) => w.hypIndex !== null)
+                return (
+                  <div key={r.ayahNumber} className="flex items-start gap-2">
+                    <div className="flex-1">
+                      {reached ? (
+                        <ComparedWords aligned={bucket} referenceWords={referenceWords} acousticAlerts={acousticAlerts} />
+                      ) : (
+                        <div className="rounded-lg border border-dashed border-brand-200/70 bg-brand-50/40 px-3 py-2.5 text-sm text-emerald-900/30 dark:border-brand-800/60 dark:bg-white/5 dark:text-brand-100/30">
+                          ⋯ لم تصل إلى هذه الآية بعد
+                        </div>
+                      )}
+                    </div>
+                    <AyahBadge n={r.numberInSurah} />
+                  </div>
+                )
+              })}
+            </div>
           </div>
         )}
       </div>
@@ -412,14 +506,20 @@ export function PracticePage() {
                   disabled={busy}
                   className="flex items-center gap-2 rounded-full bg-red-600 px-6 py-2.5 font-bold text-white shadow transition hover:bg-red-700 disabled:opacity-50"
                 >
-                  🎙️ ابدأ التسجيل
+                  <PracticeIcon className="h-5 w-5" />
+                  ابدأ التسجيل
                 </button>
               ) : (
                 <button
                   onClick={stopRecording}
-                  className="flex animate-pulse items-center gap-2 rounded-full bg-emerald-800 px-6 py-2.5 font-bold text-white shadow"
+                  className="flex items-center gap-2 rounded-full bg-emerald-600 px-6 py-2.5 font-bold text-white shadow transition hover:bg-emerald-700"
                 >
-                  ⏹ إيقاف وتحليل
+                  <span className="relative flex h-2.5 w-2.5">
+                    <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-white/70" />
+                    <span className="relative inline-flex h-2.5 w-2.5 rounded-full bg-white" />
+                  </span>
+                  <StopIcon className="h-5 w-5" />
+                  إيقاف وتحليل
                 </button>
               )}
               {busy && <span className="text-sm text-emerald-900/60 dark:text-brand-100/60">جارٍ تحليل التلاوة…</span>}
@@ -448,7 +548,10 @@ export function PracticePage() {
               <span className="ml-1 inline-block h-3 w-3 rounded bg-brand-100 dark:bg-brand-900/40" /> صحيحة (لون التجويد إن وُجد)
             </span>
             <span>
-              <span className="ml-1 inline-block h-3 w-3 rounded bg-amber-100 dark:bg-amber-900/30" /> مدّ يبدو قصيرًا
+              <span className="ml-1 inline-block h-3 w-3 rounded bg-amber-100 dark:bg-amber-900/30" /> مدّ أقصر من المطلوب
+            </span>
+            <span>
+              <span className="ml-1 inline-block h-3 w-3 rounded bg-orange-100 dark:bg-orange-900/30" /> مدّ لم يُمدّ إطلاقًا
             </span>
             <span>
               <span className="ml-1 inline-block h-3 w-3 rounded bg-red-100 dark:bg-red-900/30" /> خاطئة / ناقصة
@@ -474,10 +577,24 @@ export function PracticePage() {
                 {acousticAlerts.map((a) => (
                   <li
                     key={`${a.refIndex}-${a.rule}`}
-                    className="rounded-lg bg-amber-50 p-3 text-sm text-amber-900 dark:bg-amber-900/20 dark:text-amber-100"
+                    className={clsx(
+                      'rounded-lg p-3 text-sm',
+                      a.severity === 'severe'
+                        ? 'bg-orange-50 text-orange-900 dark:bg-orange-900/20 dark:text-orange-100'
+                        : 'bg-amber-50 text-amber-900 dark:bg-amber-900/20 dark:text-amber-100',
+                    )}
                   >
-                    المدّ في كلمة <span className="font-quran font-bold">«{a.word}»</span> يبدو قصيرًا —{' '}
-                    {TAJWEED_RULE_MAP[a.rule].nameAr} يتطلب مدًا أطول. حاول إطالته أكثر.
+                    {a.severity === 'severe' ? (
+                      <>
+                        المدّ في كلمة <span className="font-quran font-bold">«{a.word}»</span> لم يُمدّ إطلاقًا —{' '}
+                        {TAJWEED_RULE_MAP[a.rule].nameAr} يتطلب مدًا واضحًا، لا مجرد نطق عادي.
+                      </>
+                    ) : (
+                      <>
+                        المدّ في كلمة <span className="font-quran font-bold">«{a.word}»</span> يبدو أقصر من المطلوب —{' '}
+                        {TAJWEED_RULE_MAP[a.rule].nameAr} يتطلب مدًا أطول قليلًا.
+                      </>
+                    )}
                   </li>
                 ))}
               </ul>

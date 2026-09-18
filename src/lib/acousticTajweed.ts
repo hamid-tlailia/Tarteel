@@ -29,6 +29,9 @@ export interface AcousticAlert {
   rule: TajweedRuleId
   durationMs: number
   expectedMinMs: number
+  /** 'severe': recited no longer than an average plain word — the madd looks dropped
+   * entirely. 'mild': recited with some elongation, just short of the rule's minimum. */
+  severity: 'mild' | 'severe'
 }
 
 function median(values: number[]): number {
@@ -67,7 +70,14 @@ export function detectMaddDurationAlerts(
     const duration = end - start
     const expectedMin = baseline * MADD_MIN_RELATIVE_DURATION[maddRule]!
     if (duration < expectedMin) {
-      alerts.push({ refIndex: w.refIndex, word: refWord.word, rule: maddRule, durationMs: duration * 1000, expectedMinMs: expectedMin * 1000 })
+      alerts.push({
+        refIndex: w.refIndex,
+        word: refWord.word,
+        rule: maddRule,
+        durationMs: duration * 1000,
+        expectedMinMs: expectedMin * 1000,
+        severity: duration <= baseline ? 'severe' : 'mild',
+      })
     }
   }
   return alerts

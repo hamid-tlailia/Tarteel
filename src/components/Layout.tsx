@@ -43,7 +43,7 @@ export function Layout() {
               end={end}
               className={({ isActive }) =>
                 clsx(
-                  'flex flex-1 flex-col items-center gap-0.5 py-2 text-[11px] font-medium transition-colors',
+                  'flex flex-1 flex-col items-center gap-0.5 py-1.5 text-[11px] font-medium transition-colors',
                   isActive
                     ? 'text-brand-700 dark:text-brand-300'
                     : 'text-emerald-900/50 hover:text-brand-600 dark:text-brand-100/45 dark:hover:text-brand-300',
@@ -52,7 +52,14 @@ export function Layout() {
             >
               {({ isActive }) => (
                 <>
-                  <Icon className={clsx('h-6 w-6', isActive && 'scale-105')} />
+                  <span
+                    className={clsx(
+                      'flex h-8 w-12 items-center justify-center rounded-2xl transition-colors',
+                      isActive && 'bg-brand-100 dark:bg-brand-900/50',
+                    )}
+                  >
+                    <Icon className="h-6 w-6" />
+                  </span>
                   {label}
                 </>
               )}

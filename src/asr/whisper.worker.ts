@@ -39,25 +39,27 @@ self.onmessage = async (event: MessageEvent<IncomingMessage>) => {
     try {
       const transcriber = await (transcriberPromise ?? Promise.reject(new Error('النموذج غير محمّل بعد')))
 
+      // `repetition_penalty`/`no_repeat_ngram_size` discourage the classic small-Whisper
+      // failure mode of looping on one hallucinated word over a silent stretch — the main
+      // symptom reported in practice (e.g. dozens of "نحن" appearing from nowhere).
+      const baseOptions = {
+        language: 'arabic',
+        task: 'transcribe',
+        chunk_length_s: 30,
+        repetition_penalty: 1.3,
+        no_repeat_ngram_size: 3,
+      } as const
+
       // Word-level timestamps power the acoustic (madd-duration) checks, but not every
       // exported model/build supports `return_timestamps: 'word'` — fall back gracefully
       // to plain transcription (text-only comparison still works) if it throws.
       let output
       let hasTimestamps = true
       try {
-        output = await transcriber(msg.audio, {
-          language: 'arabic',
-          task: 'transcribe',
-          chunk_length_s: 30,
-          return_timestamps: 'word',
-        })
+        output = await transcriber(msg.audio, { ...baseOptions, return_timestamps: 'word' })
       } catch {
         hasTimestamps = false
-        output = await transcriber(msg.audio, {
-          language: 'arabic',
-          task: 'transcribe',
-          chunk_length_s: 30,
-        })
+        output = await transcriber(msg.audio, baseOptions)
       }
 
       const result = Array.isArray(output) ? output[0] : output

@@ -22,6 +22,38 @@ export async function decodeToPcm16k(blob: Blob): Promise<Float32Array> {
   return rendered.getChannelData(0)
 }
 
+/**
+ * Trims leading/trailing near-silence from 16kHz PCM using short-frame RMS energy.
+ * A "live" snapshot taken mid-recording is often speech followed by a long silent tail
+ * (the reciter pausing while the mic keeps running) — feeding that straight to Whisper is
+ * a classic trigger for hallucinated repeated-word loops, so we cut the dead air first.
+ * Returns an empty array when the whole clip is silence.
+ */
+export function trimSilence(pcm: Float32Array, sampleRate = TARGET_SAMPLE_RATE): Float32Array {
+  const frameSize = Math.round(sampleRate * 0.03)
+  const threshold = 0.012
+  const padSamples = Math.round(sampleRate * 0.25)
+
+  let firstActiveStart = -1
+  let lastActiveEnd = -1
+  for (let start = 0; start < pcm.length; start += frameSize) {
+    const end = Math.min(start + frameSize, pcm.length)
+    let sumSquares = 0
+    for (let i = start; i < end; i++) sumSquares += pcm[i] * pcm[i]
+    const rms = Math.sqrt(sumSquares / (end - start))
+    if (rms > threshold) {
+      if (firstActiveStart === -1) firstActiveStart = start
+      lastActiveEnd = end
+    }
+  }
+
+  if (firstActiveStart === -1) return pcm.slice(0, 0)
+
+  const start = Math.max(0, firstActiveStart - padSamples)
+  const end = Math.min(pcm.length, lastActiveEnd + padSamples)
+  return pcm.slice(start, end)
+}
+
 export class MicRecorder {
   private mediaRecorder: MediaRecorder | null = null
   private chunks: BlobPart[] = []
