@@ -14,6 +14,10 @@ import type { TimedChunk } from '../asr/whisper.worker'
  * This is a deliberately simple v1: real madd length depends on syllable count and local
  * tempo too, and Whisper's word timestamps have some jitter, especially on a general
  * (non-Quran-specialized) model — so treat this as an experimental signal, not ground truth.
+ *
+ * Only checks words the caller has already confirmed were actually recited (via
+ * `correctRefIndices` — typically from forced-decoding confidence, see whisper.worker.ts);
+ * timing for those words still comes from the free-decode alignment's word timestamps.
  */
 
 const MADD_MIN_RELATIVE_DURATION: Partial<Record<TajweedRuleId, number>> = {
@@ -44,6 +48,7 @@ export function detectMaddDurationAlerts(
   aligned: AlignedWord[],
   referenceWords: WordWithRules[],
   chunks: TimedChunk[],
+  correctRefIndices: Set<number>,
 ): AcousticAlert[] {
   if (chunks.length < 3) return []
 
@@ -57,7 +62,8 @@ export function detectMaddDurationAlerts(
 
   const alerts: AcousticAlert[] = []
   for (const w of aligned) {
-    if (w.status !== 'correct' || w.refIndex === null || w.hypIndex === null) continue
+    if (w.refIndex === null || w.hypIndex === null) continue
+    if (!correctRefIndices.has(w.refIndex)) continue
     const refWord = referenceWords[w.refIndex]
     const maddRule = refWord?.rules.find((r) => r in MADD_MIN_RELATIVE_DURATION)
     if (!maddRule) continue

@@ -6,6 +6,10 @@ export type ModelStatus = 'idle' | 'loading' | 'ready' | 'error'
 export interface TranscribeResult {
   text: string
   chunks: TimedChunk[]
+  /** Per-word confidence (0–1) from forced-decoding the known reference words, in the
+   * same order as the `referenceWords` passed to `transcribe()`. Null if this model's
+   * export doesn't support the forced pass — callers should fall back to text matching. */
+  wordConfidences: number[] | null
 }
 
 interface ProgressInfo {
@@ -50,7 +54,11 @@ export function useWhisper() {
         setStatus('ready')
         setProgress(100)
       } else if (data.type === 'result') {
-        pendingRef.current?.resolve({ text: data.text as string, chunks: (data.chunks as TimedChunk[]) ?? [] })
+        pendingRef.current?.resolve({
+          text: data.text as string,
+          chunks: (data.chunks as TimedChunk[]) ?? [],
+          wordConfidences: (data.wordConfidences as number[] | null) ?? null,
+        })
         pendingRef.current = null
       } else if (data.type === 'error') {
         setError(data.error)
@@ -63,11 +71,11 @@ export function useWhisper() {
     worker.postMessage({ type: 'load' })
   }, [status])
 
-  const transcribe = useCallback((audio: Float32Array): Promise<TranscribeResult> => {
+  const transcribe = useCallback((audio: Float32Array, referenceWords: string[]): Promise<TranscribeResult> => {
     return new Promise((resolve, reject) => {
       const requestId = ++requestIdRef.current
       pendingRef.current = { resolve, reject }
-      workerRef.current?.postMessage({ type: 'transcribe', audio, requestId }, [audio.buffer])
+      workerRef.current?.postMessage({ type: 'transcribe', audio, referenceWords, requestId }, [audio.buffer])
     })
   }, [])
 
