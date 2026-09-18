@@ -1,0 +1,78 @@
+@import "tailwindcss";
+
+@theme {
+  --font-quran: "Amiri Quran", "Amiri", serif;
+  --font-sans: "Tajawal", ui-sans-serif, system-ui, sans-serif;
+
+  --color-emerald-950: #062e22;
+  --color-brand-50: #ecfdf5;
+  --color-brand-100: #d1fae5;
+  --color-brand-200: #a7f3d0;
+  --color-brand-300: #6ee7b7;
+  --color-brand-400: #34d399;
+  --color-brand-500: #10b981;
+  --color-brand-600: #059669;
+  --color-brand-700: #047857;
+  --color-brand-800: #065f46;
+  --color-brand-900: #064e3b;
+  --color-gold-400: #d4af37;
+  --color-gold-500: #c19a2e;
+
+  /* Tajweed rule colors — aligned with the common Madinah Mushaf tajweed palette */
+  --tw-ham_wasl: #9aa0a6;
+  --tw-laam_shamsiyah: #9aa0a6;
+  --tw-slnt: #9aa0a6;
+  --tw-madda_normal: #ff7e1e;
+  --tw-madda_permissible: #9400a8;
+  --tw-madda_necessary: #ff0000;
+  --tw-madda_obligatory: #aa0060;
+  --tw-qalqalah: #dd0008;
+  --tw-ikhafa: #9400a8;
+  --tw-ikhafa_shafawi: #d500b7;
+  --tw-idgham_shafawi: #58b800;
+  --tw-idgham_ghunnah: #58b800;
+  --tw-idgham_wo_ghunnah: #58b800;
+  --tw-iqlab: #26bffd;
+  --tw-ghunnah: #ff7e1e;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  font-family: var(--font-sans);
+  background-color: #f4f1ea;
+  color: #1c2b24;
+}
+
+:root[data-theme="dark"] body {
+  background-color: #0b1512;
+  color: #eef6f1;
+}
+
+.font-quran {
+  font-family: var(--font-quran);
+  line-height: 2.6;
+}
+
+.tajweed-legend-dot {
+  display: inline-block;
+  width: 0.6rem;
+  height: 0.6rem;
+  border-radius: 9999px;
+}
+
+::selection {
+  background-color: var(--color-brand-300);
+  color: #06281f;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) body {
+    background-color: #0b1512;
+    color: #eef6f1;
+  }
+}
