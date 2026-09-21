@@ -25,6 +25,7 @@ import {
   type WordVerdict,
 } from '../lib/verdicts'
 import { LiveTajweedTracker, type LiveSnapshot, type LiveWordResult } from '../lib/liveTracker'
+import { expectedDurationBreakdown } from '../lib/wordTiming'
 import { useWhisper } from '../asr/useWhisper'
 import { decodeToPcm16k, MicRecorder, trimSilence } from '../asr/audio'
 import type { TimedChunk } from '../asr/whisper.worker'
@@ -43,6 +44,17 @@ function hypWordsFromResult(text: string, chunks: TimedChunk[]) {
   }
   const raw = text.split(/\s+/).filter(Boolean)
   return { raw, normalized: raw.map(normalizeArabic) }
+}
+
+/** The raw measurements behind one word's verdict, surfaced for threshold tuning. */
+interface WordDiagnostic {
+  refIndex: number
+  word: string
+  confidence: number | null
+  freeStatus: AlignedWord['status'] | null
+  measuredMs: number | null
+  expectedMs: number
+  expectedWithoutMaddMs: number
 }
 
 function vibrate(pattern: number | number[]) {
@@ -224,6 +236,7 @@ export function PracticePage() {
   const [micError, setMicError] = useState<string | null>(null)
   const [liveSnapshot, setLiveSnapshot] = useState<LiveSnapshot | null>(null)
   const [passageMatch, setPassageMatch] = useState(0)
+  const [diagnostics, setDiagnostics] = useState<WordDiagnostic[]>([])
 
   const recorderRef = useRef<MicRecorder | null>(null)
   const liveTrackerRef = useRef<LiveTajweedTracker | null>(null)
@@ -274,8 +287,8 @@ export function PracticePage() {
   const alignedByAyah = useMemo(() => (aligned ? bucketByAyah(aligned, ayahRanges) : ayahRanges.map(() => [])), [aligned, ayahRanges])
 
   const wordVerdicts = useMemo<WordVerdict[] | null>(
-    () => (aligned ? buildWordVerdicts(aligned, wordConfidences, referenceWords.length, ayahRanges, passageMatch) : null),
-    [aligned, wordConfidences, referenceWords.length, ayahRanges, passageMatch],
+    () => (aligned ? buildWordVerdicts(aligned, wordConfidences, referenceWords.length, ayahRanges) : null),
+    [aligned, wordConfidences, referenceWords.length, ayahRanges],
   )
 
   const meta = surahs.find((s) => s.number === surahNumber)
@@ -306,6 +319,7 @@ export function PracticePage() {
     setHypothesis(null)
     setLiveSnapshot(null)
     setPassageMatch(0)
+    setDiagnostics([])
     liveTrackerRef.current = null
   }
 
@@ -363,12 +377,32 @@ export function PracticePage() {
     const result = alignWords(referenceNormalized, collapsed.normalized)
     setAligned(result)
 
-    // How much this transcription looks like the selected passage at all — the gate that
-    // decides whether per-word leniency is safe (see buildWordVerdicts).
+    // How much this transcription looks like the selected passage at all — shown to the
+    // reciter when it is too low for the score to mean anything.
     const passage = scoreTranscriptMatch(collapsed.normalized, referenceNormalized)
     setPassageMatch(passage.score)
 
-    const verdicts = buildWordVerdicts(result, resultConfidences, referenceWords.length, ayahRanges, passage.score)
+    const verdicts = buildWordVerdicts(result, resultConfidences, referenceWords.length, ayahRanges)
+
+    // The raw numbers behind every verdict. The thresholds these feed are reasoned rather
+    // than measured — there is no corpus of real recitations to calibrate them against — so
+    // the panel that shows this is how a real attempt on a real device gets turned into
+    // evidence for tuning them.
+    setDiagnostics(
+      referenceWords.map((refWord, i) => {
+        const timing = resultTimings?.[i] ?? null
+        const expected = expectedDurationBreakdown(refWord)
+        return {
+          refIndex: i,
+          word: refWord.word,
+          confidence: resultConfidences?.[i] ?? null,
+          freeStatus: verdicts[i]?.freeStatus ?? null,
+          measuredMs: timing ? Math.round((timing[1] - timing[0]) * 1000) : null,
+          expectedMs: expected.total,
+          expectedWithoutMaddMs: expected.withoutMadd,
+        }
+      }),
+    )
     const correctRefIndices = new Set(verdicts.filter((v) => v.status === 'correct').map((v) => v.refIndex))
 
     // Forced-alignment timing (precise, from the known text) is preferred; fall back to
@@ -775,6 +809,44 @@ export function PracticePage() {
                 ))}
               </ul>
             </div>
+          )}
+
+          {diagnostics.length > 0 && (
+            <details className="rounded-xl border border-line-soft bg-bg/40">
+              <summary className="cursor-pointer px-4 py-3 text-sm font-bold text-muted">
+                🔬 الأرقام الخام للتحليل (لضبط الحساسية)
+              </summary>
+              <div className="overflow-x-auto px-4 pb-4">
+                <p className="mb-3 text-xs leading-relaxed text-faint">
+                  تطابق المقطع ككل: {Math.round(passageMatch * 100)}%. «الثقة» احتمال النموذج للكلمة، و«المقيس/المتوقع»
+                  زمنها بالملي ثانية. إن ظهر حكم خاطئ، فهذه الأرقام تكفي لضبط العتبات بدقة.
+                </p>
+                <table className="w-full text-right text-xs" dir="rtl">
+                  <thead className="text-faint">
+                    <tr>
+                      <th className="pb-1.5 font-bold">الكلمة</th>
+                      <th className="pb-1.5 font-bold">الثقة</th>
+                      <th className="pb-1.5 font-bold">النص</th>
+                      <th className="pb-1.5 font-bold">المقيس</th>
+                      <th className="pb-1.5 font-bold">المتوقع</th>
+                      <th className="pb-1.5 font-bold">بلا مدّ</th>
+                    </tr>
+                  </thead>
+                  <tbody className="font-mono text-muted">
+                    {diagnostics.map((d) => (
+                      <tr key={d.refIndex} className="border-t border-line-soft/60">
+                        <td className="py-1.5 font-quran text-sm">{d.word}</td>
+                        <td className="py-1.5">{d.confidence === null ? '—' : `${(d.confidence * 100).toFixed(1)}%`}</td>
+                        <td className="py-1.5">{d.freeStatus ?? '—'}</td>
+                        <td className="py-1.5">{d.measuredMs === null ? '—' : d.measuredMs}</td>
+                        <td className="py-1.5">{d.expectedMs}</td>
+                        <td className="py-1.5">{d.expectedWithoutMaddMs}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </details>
           )}
 
           {coachTips.length > 0 && (

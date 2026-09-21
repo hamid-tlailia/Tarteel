@@ -2,20 +2,18 @@ import type { AlignedWord } from './alignment'
 
 /**
  * Correctness thresholds. Forced-decoding confidence is a *relative* likelihood, not a
- * calibrated probability, and its absolute scale shifts with the model, the microphone and
- * the reciter — so correctness never rests on one absolute cutoff alone. See
- * buildWordVerdicts for how these combine.
+ * calibrated probability: its absolute scale shifts with the model, the microphone and the
+ * reciter, so no single absolute cutoff can carry the verdict. See buildWordVerdicts.
  */
-// A word whose tokens average this probability or better is accepted outright.
-const CONFIDENCE_THRESHOLD = 0.1
-// …and a word is also accepted if it is within this fraction of the median confidence of
-// everything else recited in the same pass. This self-calibrates: if the audio or model is
-// weak, every confidence drops together and the relative comparison still separates the
-// word that was actually skipped from the ones that were merely recorded quietly.
-const CONFIDENCE_RELATIVE_FACTOR = 0.4
-// …but only when the transcription as a whole plausibly *is* this passage. Below this, the
-// reciter is likely reading something else entirely, and the relative leniency (which would
-// otherwise pass every word, since all confidences would be uniformly low) is withheld.
+// A word whose confidence falls below this fraction of the recitation's own median is an
+// outlier — the rest of the passage establishes what "recited" looks like for this reciter
+// and this microphone, and this word does not resemble it.
+const CONFIDENCE_OUTLIER_FACTOR = 0.5
+// A confidence this low means the model found the word essentially absent from the audio,
+// whatever the rest of the passage looks like.
+const CONFIDENCE_ABSOLUTE_FLOOR = 0.05
+// Below this, the transcription does not plausibly correspond to the selected passage at
+// all, and the results card says so rather than presenting a misleading percentage.
 export const PASSAGE_MATCH_FLOOR = 0.35
 
 export interface AyahRange {
@@ -63,26 +61,31 @@ function median(values: number[]): number {
 }
 
 /**
- * Decides which reference words were actually recited, from two *independent* signals:
+ * Decides which reference words were actually recited, by weighing evidence *against* each
+ * word rather than looking for a reason to accept it.
  *
- *  1. forced-decoding confidence — precise, and immune to the ASR's bias toward guessing a
- *     more statistically common phrase (the "الحاقة → الحم" failure), but its absolute
- *     scale is uncalibrated and shifts with model, microphone and reciter;
- *  2. the free transcription's fuzzy text match — coarse and occasionally fooled by that
- *     same bias, but never uniformly pessimistic.
+ * Three independent signals can indicate a problem:
+ *   A. the word's confidence is an outlier below this recitation's own median — the rest of
+ *      the passage establishes what "recited" looks like for this voice and microphone, and
+ *      this word does not resemble it;
+ *   B. its confidence is below an absolute floor, i.e. the model found it essentially absent;
+ *   C. the free transcription disagrees, having heard a different word there or nothing.
  *
- * A word is accepted when *either* signal supports it, and only called wrong when both
- * agree. That asymmetry is the whole point: relying on forced-decoding confidence alone is
- * what made a correctly recited ayah score 0%, because one pessimistic signal had no
- * counterweight. A false "correct" costs far less here than a false "wrong", which tells a
- * reciter they erred when they did not.
+ * A word is called wrong when acoustic doubt is corroborated by the text (A or B, together
+ * with C), or when the acoustic evidence is damning on its own (A and B together).
+ *
+ * Both halves of that rule exist because of a specific failure. Requiring corroboration is
+ * what stops a correctly recited passage scoring 0%: forced-decoding confidence alone was
+ * uniformly pessimistic, and with no counterweight it condemned every word. But an earlier
+ * attempt at the fix accepted a word whenever *any* signal favoured it, which collapsed the
+ * other way — everything scored 100%, real mistakes included. Evidence of error has to be
+ * weighed, not merely outvoted by evidence of success.
  */
 export function buildWordVerdicts(
   aligned: AlignedWord[],
   wordConfidences: number[] | null,
   wordCount: number,
   ayahRanges: AyahRange[],
-  passageMatch: number,
 ): WordVerdict[] {
   const alignedByAyah = bucketByAyah(aligned, ayahRanges)
   const freeByRef = new Map<number, AlignedWord>()
@@ -102,7 +105,7 @@ export function buildWordVerdicts(
       if (reachedAt(i)) reachedConfidences.push(wordConfidences[i] ?? 0)
     }
   }
-  const relativeFloor = median(reachedConfidences) * CONFIDENCE_RELATIVE_FACTOR
+  const outlierFloor = median(reachedConfidences) * CONFIDENCE_OUTLIER_FACTOR
 
   return Array.from({ length: wordCount }, (_, i): WordVerdict => {
     if (!reachedAt(i)) return { refIndex: i, status: 'unreached', confidence: null, hypGuess: null, freeStatus: null }
@@ -110,16 +113,18 @@ export function buildWordVerdicts(
     const freeEntry = freeByRef.get(i)
     const freeStatus = freeEntry?.status ?? 'missing'
     const hypGuess = freeEntry?.hypWord ?? null
-    const freeSaysCorrect = freeStatus === 'correct'
+    const textDisagrees = freeStatus !== 'correct'
 
     if (!wordConfidences) {
-      return { refIndex: i, status: freeSaysCorrect ? 'correct' : 'wrong', confidence: null, hypGuess, freeStatus }
+      return { refIndex: i, status: textDisagrees ? 'wrong' : 'correct', confidence: null, hypGuess, freeStatus }
     }
 
     const confidence = wordConfidences[i] ?? 0
-    const passesAbsolute = confidence >= CONFIDENCE_THRESHOLD
-    const passesRelative = passageMatch >= PASSAGE_MATCH_FLOOR && confidence >= relativeFloor
-    const status: WordStatus = freeSaysCorrect || passesAbsolute || passesRelative ? 'correct' : 'wrong'
-    return { refIndex: i, status, confidence, hypGuess, freeStatus }
+    const isOutlier = confidence < outlierFloor
+    const belowFloor = confidence < CONFIDENCE_ABSOLUTE_FLOOR
+    const acousticDoubt = isOutlier || belowFloor
+    const wrong = (acousticDoubt && textDisagrees) || (isOutlier && belowFloor)
+
+    return { refIndex: i, status: wrong ? 'wrong' : 'correct', confidence, hypGuess, freeStatus }
   })
 }

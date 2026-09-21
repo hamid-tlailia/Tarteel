@@ -2,28 +2,39 @@ import type { WordWithRules } from './tajweed'
 import type { TajweedRuleId } from '../types/quran'
 import type { AlignedWord } from './alignment'
 import type { TimedChunk } from '../asr/whisper.worker'
+import { expectedDurationBreakdown } from './wordTiming'
 
 /**
- * Heuristic acoustic check for madd (elongation) rules — the first step beyond plain
- * text comparison. Whisper's ASR text output can't tell a rushed madd from a full one
- * (both transcribe to the same word), so this looks at the *duration* of each recited
- * word relative to the reciter's own median word duration, and flags madd-tagged words
- * that were recited noticeably shorter than the elongation their rule requires.
+ * Heuristic acoustic check for madd (elongation) rules — the step beyond plain text
+ * comparison. Whisper's text output cannot tell a rushed madd from a full one, since both
+ * transcribe to the same word, so this compares each recited word's *duration* against the
+ * duration that word should take: its syllable count plus the ḥarakāt its own rules call
+ * for (see wordTiming.ts), scaled by the pace this particular reciter is reading at.
  *
- * This is a deliberately simple v1: real madd length depends on syllable count and local
- * tempo too — so treat this as an experimental signal, not ground truth. Only checks words
- * the caller has already confirmed were actually recited (via `correctRefIndices`,
- * typically from forced-decoding confidence — see whisper.worker.ts).
+ * Still a heuristic, not ground truth — it measures the whole word, not the madd letter
+ * within it. Only words the caller has already confirmed were actually recited are checked
+ * (via `correctRefIndices`, from forced-decoding confidence — see whisper.worker.ts).
  */
 
-// Relative-duration floors follow each rule's actual ḥarākāt length as marked by the
-// quran-tajweed edition: `n`/`p` = natural madd (2), `o` = wājib muttaṣil/munfaṣil (4–5),
-// `m` = lāzim (6).
-const MADD_MIN_RELATIVE_DURATION: Partial<Record<TajweedRuleId, number>> = {
-  madda_normal: 1.15,
-  madda_permissible: 1.25,
-  madda_obligatory: 1.5,
-  madda_necessary: 1.8,
+const MADD_RULES = new Set<TajweedRuleId>([
+  'madda_normal',
+  'madda_permissible',
+  'madda_obligatory',
+  'madda_necessary',
+])
+
+/** How far under its expected duration a word may fall before the madd is called short.
+ * Generous on purpose: recitation pace varies within a single passage, and telling a
+ * reciter they dropped a madd they actually performed is the more damaging error. */
+const MADD_TOLERANCE = 0.3
+
+/** How close to the no-elongation duration counts as "the madd is not there at all".
+ * A band rather than an exact boundary, because word timings come from the ASR at roughly
+ * 20ms resolution — far coarser than the knife edge an exact comparison would draw. */
+const MADD_DROPPED_MARGIN = 1.15
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, value))
 }
 
 export interface AcousticAlert {
@@ -32,8 +43,8 @@ export interface AcousticAlert {
   rule: TajweedRuleId
   durationMs: number
   expectedMinMs: number
-  /** 'severe': recited no longer than an average plain word — the madd looks dropped
-   * entirely. 'mild': recited with some elongation, just short of the rule's minimum. */
+  /** 'severe': the word took no longer than it would have with no elongation at all, so
+   * the madd looks absent. 'mild': elongated, but short of what the rule asks for. */
   severity: 'mild' | 'severe'
 }
 
@@ -54,31 +65,57 @@ export function detectMaddDurationAlertsForced(
   wordTimings: ([number, number] | null)[],
   correctRefIndices: Set<number>,
 ): AcousticAlert[] {
-  const durations = wordTimings.map((t) => (t ? t[1] - t[0] : 0)).filter((d) => d > 0)
-  if (durations.length < 3) return []
-  const baseline = median(durations)
-  if (baseline <= 0) return []
+  // Each word is judged against *its own* expected duration (syllable count + the rules it
+  // carries), not against a flat median of every word in the passage.
+  //
+  // The flat median was badly wrong in two compounding ways. It was contaminated by the
+  // madd words themselves — in a passage like «قُلْ يَـٰٓأَيُّهَا ٱلْكَـٰفِرُونَ», where two of
+  // three words carry madd, the median *is* an elongated word, so a correctly elongated
+  // madd could never clear the required multiple of it and was reported as dropped. And it
+  // ignored syllable count entirely, so a long word was credited with elongation it never
+  // had while a short one was condemned for lacking elongation it did perform.
+  const ratios: number[] = []
+  referenceWords.forEach((refWord, i) => {
+    const timing = wordTimings[i]
+    if (!timing) return
+    const measuredMs = (timing[1] - timing[0]) * 1000
+    if (measuredMs <= 0) return
+    const expected = expectedDurationBreakdown(refWord)
+    if (expected.total > 0) ratios.push(measuredMs / expected.total)
+  })
+  if (ratios.length < 3) return []
+
+  // The reciter's own pace, as a multiple of the reference tempo. Taking the median keeps
+  // one rushed or drawn-out word from dragging the whole scale with it.
+  const tempoScale = clamp(median(ratios), 0.4, 2.5)
 
   const alerts: AcousticAlert[] = []
   referenceWords.forEach((refWord, i) => {
     if (!correctRefIndices.has(i)) return
     const timing = wordTimings[i]
     if (!timing) return
-    const maddRule = refWord.rules.find((r) => r in MADD_MIN_RELATIVE_DURATION)
+    const maddRule = refWord.rules.find((r) => MADD_RULES.has(r))
     if (!maddRule) return
 
-    const duration = timing[1] - timing[0]
-    const expectedMin = baseline * MADD_MIN_RELATIVE_DURATION[maddRule]!
-    if (duration < expectedMin) {
-      alerts.push({
-        refIndex: i,
-        word: refWord.word,
-        rule: maddRule,
-        durationMs: duration * 1000,
-        expectedMinMs: expectedMin * 1000,
-        severity: duration <= baseline ? 'severe' : 'mild',
-      })
-    }
+    const measuredMs = (timing[1] - timing[0]) * 1000
+    if (measuredMs <= 0) return
+
+    const expected = expectedDurationBreakdown(refWord)
+    const expectedMs = expected.total * tempoScale
+    // "Dropped entirely" now means something checkable: the word took no longer than it
+    // would have without elongating its madd letter at all, at this reciter's own pace.
+    const noMaddMs = expected.withoutMadd * tempoScale
+
+    if (measuredMs >= expectedMs * (1 - MADD_TOLERANCE)) return
+
+    alerts.push({
+      refIndex: i,
+      word: refWord.word,
+      rule: maddRule,
+      durationMs: measuredMs,
+      expectedMinMs: expectedMs * (1 - MADD_TOLERANCE),
+      severity: measuredMs <= noMaddMs * MADD_DROPPED_MARGIN ? 'severe' : 'mild',
+    })
   })
   return alerts
 }
@@ -97,39 +134,56 @@ export function detectMaddDurationAlertsFromFreeDecode(
 ): AcousticAlert[] {
   if (chunks.length < 3) return []
 
-  const durations = chunks
-    .map((c) => (typeof c.timestamp?.[1] === 'number' ? c.timestamp[1] - c.timestamp[0] : 0))
-    .filter((d) => d > 0)
-  if (durations.length < 3) return []
+  /** Measured duration in ms for the reference word an alignment entry points at. */
+  const measuredMsOf = (w: AlignedWord): number | null => {
+    if (w.hypIndex === null) return null
+    const chunk = chunks[w.hypIndex]
+    const start = chunk?.timestamp?.[0]
+    const end = chunk?.timestamp?.[1]
+    if (typeof start !== 'number' || typeof end !== 'number') return null
+    const ms = (end - start) * 1000
+    return ms > 0 ? ms : null
+  }
 
-  const baseline = median(durations)
-  if (baseline <= 0) return []
+  // Same syllable-and-rule-aware comparison as the forced path above — see the note there
+  // for why a flat median of every word's duration was the wrong baseline.
+  const ratios: number[] = []
+  for (const w of aligned) {
+    if (w.refIndex === null) continue
+    const refWord = referenceWords[w.refIndex]
+    if (!refWord) continue
+    const measuredMs = measuredMsOf(w)
+    if (measuredMs === null) continue
+    const expected = expectedDurationBreakdown(refWord)
+    if (expected.total > 0) ratios.push(measuredMs / expected.total)
+  }
+  if (ratios.length < 3) return []
+  const tempoScale = clamp(median(ratios), 0.4, 2.5)
 
   const alerts: AcousticAlert[] = []
   for (const w of aligned) {
     if (w.refIndex === null || w.hypIndex === null) continue
     if (!correctRefIndices.has(w.refIndex)) continue
     const refWord = referenceWords[w.refIndex]
-    const maddRule = refWord?.rules.find((r) => r in MADD_MIN_RELATIVE_DURATION)
+    const maddRule = refWord?.rules.find((r) => MADD_RULES.has(r))
     if (!maddRule) continue
 
-    const chunk = chunks[w.hypIndex]
-    const end = chunk?.timestamp?.[1]
-    const start = chunk?.timestamp?.[0]
-    if (typeof end !== 'number' || typeof start !== 'number') continue
+    const measuredMs = measuredMsOf(w)
+    if (measuredMs === null) continue
 
-    const duration = end - start
-    const expectedMin = baseline * MADD_MIN_RELATIVE_DURATION[maddRule]!
-    if (duration < expectedMin) {
-      alerts.push({
-        refIndex: w.refIndex,
-        word: refWord.word,
-        rule: maddRule,
-        durationMs: duration * 1000,
-        expectedMinMs: expectedMin * 1000,
-        severity: duration <= baseline ? 'severe' : 'mild',
-      })
-    }
+    const expected = expectedDurationBreakdown(refWord)
+    const expectedMs = expected.total * tempoScale
+    const noMaddMs = expected.withoutMadd * tempoScale
+    if (measuredMs >= expectedMs * (1 - MADD_TOLERANCE)) continue
+
+    alerts.push({
+      refIndex: w.refIndex,
+      word: refWord.word,
+      rule: maddRule,
+      durationMs: measuredMs,
+      expectedMinMs: expectedMs * (1 - MADD_TOLERANCE),
+      severity: measuredMs <= noMaddMs * MADD_DROPPED_MARGIN ? 'severe' : 'mild',
+    })
   }
   return alerts
 }
