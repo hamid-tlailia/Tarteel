@@ -10,6 +10,30 @@ import {
 
 env.allowLocalModels = false
 
+/**
+ * The onnxruntime-web version @huggingface/transformers itself depends on can be an
+ * unpinned nightly "dev" build rather than a stable npm release (verified for this project:
+ * it resolved to `1.31.0-dev.<date>-<hash>`, npm's `dev` dist-tag — not `latest`, which is
+ * `1.30.0`). By default transformers.js fetches its WASM runtime from a CDN URL built from
+ * that *exact* resolved version string, so the app ends up depending on a same-day nightly
+ * artifact that can vanish from the registry or carry undiagnosed bugs — a documented one
+ * being an int64→Number (BigInt) defect that broke Whisper specifically on mobile browsers,
+ * root-caused in a sibling project (hamid-tlailia/Tajweed) that hit the exact same failure
+ * mode we did. Pin explicitly to the latest stable release instead, with a backup CDN for
+ * flaky mobile networks.
+ */
+const ORT_STABLE_VERSION = '1.30.0'
+const ORT_WASM_PREFIXES = [
+  `https://cdn.jsdelivr.net/npm/onnxruntime-web@${ORT_STABLE_VERSION}/dist/`,
+  `https://unpkg.com/onnxruntime-web@${ORT_STABLE_VERSION}/dist/`,
+]
+function ortWasmPathsFor(prefix: string) {
+  return {
+    mjs: `${prefix}ort-wasm-simd-threaded.asyncify.mjs`,
+    wasm: `${prefix}ort-wasm-simd-threaded.asyncify.wasm`,
+  }
+}
+
 // A generic Whisper model has essentially no idea what Quranic recitation sounds like
 // (it's melodic/elongated speech very unlike what Whisper's Arabic training data covers),
 // which is why it can output something as unrelated as "نحن أخذ" for "لا أقسم بهذا البلد".
@@ -173,15 +197,30 @@ self.onmessage = async (event: MessageEvent<IncomingMessage>) => {
   const msg = event.data
   if (msg.type === 'load') {
     try {
-      transcriberPromise ??= pipeline('automatic-speech-recognition', MODEL_ID, {
-        dtype: 'q8',
-        progress_callback: (progress: ProgressInfo) => {
-          self.postMessage({ type: 'progress', progress })
-        },
-      }) as Promise<AutomaticSpeechRecognitionPipeline>
+      transcriberPromise ??= (async () => {
+        let lastErr: unknown = null
+        for (const prefix of ORT_WASM_PREFIXES) {
+          try {
+            if (!env.backends.onnx.wasm) throw new Error('ONNX wasm backend unavailable')
+            env.backends.onnx.wasm.wasmPaths = ortWasmPathsFor(prefix)
+            return (await pipeline('automatic-speech-recognition', MODEL_ID, {
+              dtype: 'q8',
+              progress_callback: (progress: ProgressInfo) => {
+                self.postMessage({ type: 'progress', progress })
+              },
+            })) as AutomaticSpeechRecognitionPipeline
+          } catch (err) {
+            lastErr = err // try the next CDN
+          }
+        }
+        throw lastErr instanceof Error ? lastErr : new Error('تعذّر تحميل محرك التعرّف الصوتي (ONNX Runtime)')
+      })()
       await transcriberPromise
       self.postMessage({ type: 'ready' })
     } catch (err) {
+      // Reset so the "إعادة المحاولة" button actually retries instead of re-awaiting the
+      // same cached rejected promise forever.
+      transcriberPromise = null
       self.postMessage({ type: 'error', error: (err as Error).message })
     }
     return
