@@ -57,8 +57,10 @@ export function surahAudioUrl(surahNumber: number): string {
   return `${AUDIO_CDN}/${RECITER}/${surahNumber}.mp3`
 }
 
-/** Surahs with a good density/variety of tajweed rules, used to find live worked examples. */
-const EXAMPLE_SURAHS = [67, 36, 78, 2, 112, 113, 114, 1]
+/** Surahs with a good density/variety of tajweed rules, used to find live worked examples.
+ * 77 (نَخْلُقكُّمْ 77:20) covers idghām al-mutaqāribayn and 7 (أَثْقَلَت دَّعَوَا 7:189) /
+ * 11 (ٱرْكَب مَّعَنَا 11:42) cover idghām al-mutajānisayn — the two rarest marked rules. */
+const EXAMPLE_SURAHS = [67, 36, 78, 77, 2, 112, 113, 114, 1, 7, 11]
 
 /** Scans a handful of surahs for live ayahs illustrating a given tajweed rule. */
 export async function fetchExampleAyahsForRule(

@@ -79,7 +79,11 @@ export function TajweedText({ segments, colored = true, className, interactive =
               role={interactive ? 'button' : undefined}
               tabIndex={interactive ? 0 : undefined}
               style={{ color: rule.color }}
-              className={interactive ? 'cursor-pointer underline decoration-dotted decoration-2 underline-offset-4' : undefined}
+              className={
+                interactive
+                  ? 'cursor-pointer rounded-sm underline decoration-dotted decoration-2 underline-offset-4 transition-[text-shadow] duration-200 hover:[text-shadow:0_0_14px_currentColor]'
+                  : undefined
+              }
               onClick={
                 interactive
                   ? (e) => {
@@ -105,14 +109,19 @@ export function TajweedText({ segments, colored = true, className, interactive =
               <div
                 ref={tooltipRef}
                 style={tooltipStyle}
-                className="z-30 w-56 rounded-xl border border-brand-200 bg-white p-3 text-right text-sm font-sans leading-relaxed text-emerald-950 shadow-lg dark:border-brand-800 dark:bg-emerald-950 dark:text-brand-50"
+                className="card-lux z-30 w-60 rounded-2xl! p-3.5 text-right font-sans text-sm leading-relaxed text-ink shadow-[var(--shadow-lift)]"
                 dir="rtl"
               >
-                <span className="mb-1 flex items-center gap-2 font-bold" style={{ color: rule.color }}>
-                  <span className="tajweed-legend-dot" style={{ backgroundColor: rule.color }} />
+                <span className="mb-1.5 flex items-center gap-2 font-display text-base font-bold" style={{ color: rule.color }}>
+                  <span className="tajweed-legend-dot" style={{ backgroundColor: rule.color, color: rule.color }} />
                   {rule.nameAr}
                 </span>
-                <span className="block text-xs opacity-80">{rule.description}</span>
+                {rule.durationAr && (
+                  <span className="mb-1.5 inline-block rounded-full border border-gold/40 px-2 py-0.5 text-[10px] font-bold text-gold">
+                    المقدار: {rule.durationAr}
+                  </span>
+                )}
+                <span className="block text-xs leading-relaxed text-muted">{rule.description}</span>
               </div>
             )}
           </span>

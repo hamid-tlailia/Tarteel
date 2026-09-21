@@ -1,6 +1,7 @@
 import { NavLink, Outlet } from 'react-router-dom'
 import clsx from 'clsx'
 import { HomeIcon, LessonsIcon, ProgressIcon, PracticeIcon, QuranIcon } from './NavIcons'
+import { ThemeSwitcher } from './ThemeSwitcher'
 
 const NAV_ITEMS = [
   { to: '/', label: 'الرئيسية', end: true, Icon: HomeIcon },
@@ -13,29 +14,49 @@ const NAV_ITEMS = [
 export function Layout() {
   return (
     <div className="flex min-h-screen flex-col">
-      <header className="sticky top-0 z-30 border-b border-brand-200/60 bg-[#f4f1ea]/90 backdrop-blur dark:border-brand-900/60 dark:bg-[#0b1512]/90">
-        <div className="mx-auto flex max-w-6xl items-center px-4 py-3">
-          <NavLink to="/" className="flex items-center gap-2 text-xl font-black text-brand-700 dark:text-brand-300">
-            <span aria-hidden>﴾</span>
-            ورتل
+      <header className="sticky top-0 z-30 border-b border-line/70" style={{ backgroundColor: 'var(--glass)', backdropFilter: 'blur(14px)' }}>
+        <div className="mx-auto flex max-w-6xl items-center justify-between gap-3 px-4 py-3">
+          <NavLink to="/" className="group flex items-center gap-2.5">
+            <span
+              aria-hidden
+              className="flex h-10 w-10 items-center justify-center rounded-xl border border-gold/50 bg-surface font-display text-lg text-gold shadow-sm transition group-hover:border-gold"
+            >
+              ٱ
+            </span>
+            <span className="leading-none">
+              <span className="text-gilded block font-display text-2xl font-bold tracking-wide">ورتل</span>
+              <span className="mt-1 block text-[10px] font-medium tracking-[0.3em] text-faint">
+                TAJWEED · ذكاء اصطناعي
+              </span>
+            </span>
           </NavLink>
+          <ThemeSwitcher />
         </div>
+        <div className="hair-gold" />
       </header>
 
-      <main className="mx-auto w-full max-w-6xl flex-1 px-4 py-6 pb-24">
+      <main className="mx-auto w-full max-w-6xl flex-1 px-4 py-7 pb-28">
         <Outlet />
       </main>
 
-      <footer className="hidden border-t border-brand-200/60 py-4 text-center text-xs text-emerald-900/50 sm:block dark:border-brand-900/60 dark:text-brand-100/40">
-        النصوص القرآنية وأحكام التجويد مصدرها alquran.cloud — يعمل التعرّف الصوتي بالكامل داخل متصفحك.
+      <footer className="hidden px-4 pb-28 pt-2 text-center sm:block sm:pb-6">
+        <div className="hair-gold mx-auto mb-4 max-w-md" />
+        <p className="text-xs leading-relaxed text-faint">
+          <span className="font-display text-sm text-gold">﴾</span>{' '}
+          النصوص القرآنية وأحكام التجويد مصدرها alquran.cloud — يعمل التعرّف الصوتي بالكامل داخل متصفحك دون رفع صوتك لأي
+          خادم. <span className="font-display text-sm text-gold">﴿</span>
+        </p>
       </footer>
 
       <nav
-        className="fixed inset-x-0 bottom-0 z-40 border-t border-brand-200/70 bg-[#f4f1ea]/95 backdrop-blur dark:border-brand-900/70 dark:bg-[#0b1512]/95"
-        style={{ paddingBottom: 'env(safe-area-inset-bottom)' }}
+        className="fixed inset-x-0 bottom-0 z-40 px-3 pb-3"
+        style={{ paddingBottom: 'calc(env(safe-area-inset-bottom) + 0.75rem)' }}
         aria-label="التنقل الرئيسي"
       >
-        <div className="mx-auto flex max-w-6xl items-stretch justify-between px-2">
+        <div
+          className="mx-auto flex max-w-lg items-stretch justify-between gap-1 rounded-3xl border border-line/80 p-1.5 shadow-[var(--shadow-lift)]"
+          style={{ backgroundColor: 'var(--glass)', backdropFilter: 'blur(16px)' }}
+        >
           {NAV_ITEMS.map(({ to, label, end, Icon }) => (
             <NavLink
               key={to}
@@ -43,22 +64,21 @@ export function Layout() {
               end={end}
               className={({ isActive }) =>
                 clsx(
-                  'flex flex-1 flex-col items-center gap-0.5 py-1.5 text-[11px] font-medium transition-colors',
-                  isActive
-                    ? 'text-brand-700 dark:text-brand-300'
-                    : 'text-emerald-900/50 hover:text-brand-600 dark:text-brand-100/45 dark:hover:text-brand-300',
+                  'flex flex-1 flex-col items-center gap-0.5 rounded-2xl px-1 py-1.5 text-[11px] font-semibold transition-all duration-200',
+                  isActive ? 'bg-accent-soft text-accent' : 'text-faint hover:text-ink',
                 )
               }
             >
               {({ isActive }) => (
                 <>
-                  <span
-                    className={clsx(
-                      'flex h-8 w-12 items-center justify-center rounded-2xl transition-colors',
-                      isActive && 'bg-brand-100 dark:bg-brand-900/50',
+                  <span className="relative flex h-8 w-12 items-center justify-center">
+                    <Icon className={clsx('h-6 w-6 transition-transform', isActive && 'scale-110')} />
+                    {isActive && (
+                      <span
+                        aria-hidden
+                        className="absolute -bottom-0.5 h-1 w-1 rounded-full bg-gold shadow-[0_0_6px_var(--c-gold)]"
+                      />
                     )}
-                  >
-                    <Icon className="h-6 w-6" />
                   </span>
                   {label}
                 </>

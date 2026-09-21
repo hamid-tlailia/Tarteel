@@ -1,24 +1,31 @@
 import type { TajweedRuleId, TajweedSegment } from '../types/quran'
 
-/** api.alquran.cloud `quran-tajweed` edition single-letter rule codes → rule ids. */
+/**
+ * api.alquran.cloud `quran-tajweed` edition single-letter rule codes → rule ids.
+ *
+ * Verified against the official alquran.cloud Tajweed Guide (alquran.cloud/tajweed-guide),
+ * the islamic-network/alquran.tools reference implementation, and live API payloads
+ * (e.g. `[i[ِنۢ ب]` in مِنْۢ بَعْدِ = iqlāb, `[a[ةٌ و]` in سِنَةٌ وَلَا = idghām with ghunnah,
+ * `[u[مٌ ل]` in نَوْمٌ لَّهُ = idghām without ghunnah, `[d[ت]` in أَثْقَلَت دَّعَوَا = mutajānisayn,
+ * `[b[ق]` in نَخْلُقكُّمْ = mutaqāribayn, `[m[َا]` in الضَّآلِّينَ = madd lāzim).
+ */
 const LETTER_TO_RULE: Record<string, TajweedRuleId> = {
   h: 'ham_wasl',
   s: 'slnt',
   l: 'laam_shamsiyah',
   n: 'madda_normal',
-  m: 'madda_permissible',
-  p: 'madda_necessary',
+  p: 'madda_permissible',
+  m: 'madda_necessary',
   o: 'madda_obligatory',
   q: 'qalqalah',
-  c: 'ikhafa',
-  f: 'ikhafa_shafawi',
-  e: 'ikhafa_shafawi',
+  c: 'ikhafa_shafawi',
+  f: 'ikhafa',
   w: 'idgham_shafawi',
-  i: 'idgham_ghunnah',
-  a: 'idgham_wo_ghunnah',
-  d: 'idgham_wo_ghunnah',
-  b: 'idgham_wo_ghunnah',
-  u: 'iqlab',
+  i: 'iqlab',
+  a: 'idgham_ghunnah',
+  u: 'idgham_wo_ghunnah',
+  d: 'idgham_mutajanisayn',
+  b: 'idgham_mutaqaribayn',
   g: 'ghunnah',
 }
 
@@ -46,12 +53,14 @@ export function stripTajweedMarkup(raw: string): string {
 
 export interface TajweedRuleInfo {
   id: TajweedRuleId
-  category: 'noon_meem' | 'madd' | 'qalqalah' | 'ghunnah' | 'lam' | 'other'
+  category: 'noon_meem' | 'idgham_types' | 'madd' | 'qalqalah' | 'ghunnah' | 'lam' | 'other'
   nameAr: string
   nameEn: string
   color: string
   description: string
   letters?: string
+  /** Length of the rule's effect in ḥarakāt, when it has a fixed duration (madd, ghunnah…). */
+  durationAr?: string
   example?: string
 }
 
@@ -62,9 +71,11 @@ export const TAJWEED_RULES: TajweedRuleInfo[] = [
     nameAr: 'الغُنّة',
     nameEn: 'Ghunnah',
     color: 'var(--tw-ghunnah)',
+    durationAr: 'حركتان',
     description:
-      'صوت أغن يخرج من الخيشوم عند النون والميم المشددتين، ويُمد بمقدار حركتين، وهي أصل تقوم عليها كثير من أحكام النون والميم الساكنتين.',
+      'صوت أغنّ لذيذ يخرج من الخيشوم (أعلى الأنف) لا دخل للسان فيه، يصاحب النون والميم المشددتين بمقدار حركتين، ولا تنفكّان عنها أبدًا، وهي أصل تقوم عليه أحكام النون والميم الساكنتين والتنوين.',
     letters: 'نّ / مّ',
+    example: 'إِنَّ · فَلَمَّا',
   },
   {
     id: 'idgham_ghunnah',
@@ -72,10 +83,11 @@ export const TAJWEED_RULES: TajweedRuleInfo[] = [
     nameAr: 'الإدغام بغُنّة',
     nameEn: 'Idghām with Ghunnah',
     color: 'var(--tw-idgham_ghunnah)',
+    durationAr: 'حركتان',
     description:
-      'إذا جاء بعد النون الساكنة أو التنوين أحد حروف (ينمو) في كلمة أخرى، تُدغم النون في الحرف الذي بعدها مع بقاء صفة الغنة.',
+      'إذا جاء بعد النون الساكنة أو التنوين أحد حروف (يَرْمَلُون) الأربعة: الياء والنون والميم والواو، في أول الكلمة التالية، تُدغم النون في ذلك الحرف ويصيران حرفًا واحدًا مشددًا مع بقاء الغُنّة بمقدار حركتين.',
     letters: 'ي ن م و',
-    example: 'مَنْ يَقُولُ',
+    example: 'مَن يَّقُولُ · سِنَةٌ وَلَا',
   },
   {
     id: 'idgham_wo_ghunnah',
@@ -84,9 +96,9 @@ export const TAJWEED_RULES: TajweedRuleInfo[] = [
     nameEn: 'Idghām without Ghunnah',
     color: 'var(--tw-idgham_wo_ghunnah)',
     description:
-      'إذا جاء بعد النون الساكنة أو التنوين حرف اللام أو الراء، تُدغم فيه إدغامًا كاملًا دون غنة.',
+      'إذا جاء بعد النون الساكنة أو التنوين حرف اللام أو الراء في أول الكلمة التالية، تُدغم فيهما إدغامًا كاملًا بلا غُنّة، فيُشدَّد الحرف الثاني ويعتمد عليه اللسان مباشرة.',
     letters: 'ل ر',
-    example: 'مِنْ رَبِّهِمْ',
+    example: 'مِن رَّبِّهِمْ · نَوْمٌ لَّهُ',
   },
   {
     id: 'iqlab',
@@ -94,42 +106,69 @@ export const TAJWEED_RULES: TajweedRuleInfo[] = [
     nameAr: 'الإقلاب',
     nameEn: 'Iqlāb',
     color: 'var(--tw-iqlab)',
+    durationAr: 'حركتان',
     description:
-      'إذا جاء حرف الباء بعد النون الساكنة أو التنوين، تُقلب النون ميمًا مخفاة مع الغنة قبل الباء.',
+      'إذا جاء حرف الباء بعد النون الساكنة أو التنوين، تُقلب النون ميمًا مخفاة مع الغُنّة بمقدار حركتين، وعلامة ذلك في رسم المصحف ميم صغيرة (مِۢنۢ) تنبيهًا على القلب.',
     letters: 'ب',
-    example: 'مِنْ بَعْدِ',
+    example: 'مِنۢ بَعْدِ · أَنۢبِئْهُم',
   },
   {
     id: 'ikhafa',
     category: 'noon_meem',
     nameAr: 'الإخفاء الحقيقي',
-    nameEn: 'Ikhfā’',
+    nameEn: 'Ikhfāʾ',
     color: 'var(--tw-ikhafa)',
+    durationAr: 'حركتان',
     description:
-      'إذا جاء بعد النون الساكنة أو التنوين أحد الحروف الخمسة عشر الباقية، تُنطق النون مخفاة بين الإظهار والإدغام مع غنة.',
+      'إذا جاء بعد النون الساكنة أو التنوين واحد من الحروف الخمسة عشر الباقية، تُنطق النون مخفاةً بين الإظهار والإدغام — بلا تشديد — مع غُنّة بمقدار حركتين، وهي أكثر أحكام النون الساكنة وقوعًا في القرآن.',
     letters: 'ت ث ج د ذ ز س ش ص ض ط ظ ف ق ك',
-    example: 'مِنْ كُلِّ',
+    example: 'يَنقُضُونَ · مَن ذَا · مِن كُلِّ',
   },
   {
     id: 'ikhafa_shafawi',
     category: 'noon_meem',
     nameAr: 'الإخفاء الشفوي',
-    nameEn: 'Ikhfā’ Shafawī',
+    nameEn: 'Ikhfāʾ Shafawī',
     color: 'var(--tw-ikhafa_shafawi)',
-    description: 'إذا جاء حرف الباء بعد الميم الساكنة، تُخفى الميم مع الغنة (إخفاء شفوي).',
-    letters: 'ب',
-    example: 'تَرْمِيهِمْ بِحِجَارَةٍ',
+    durationAr: 'حركتان',
+    description:
+      'إذا جاء حرف الباء بعد الميم الساكنة، تُخفى الميم عند الشفتين مع بقاء الغُنّة بمقدار حركتين، ويسمى شفويًا لأن مخرج الميم والباء من الشفتين.',
+    letters: 'مْ + ب',
+    example: 'تَرْمِيهِم بِحِجَارَةٍ',
   },
   {
     id: 'idgham_shafawi',
     category: 'noon_meem',
-    nameAr: 'الإدغام الشفوي / إظهار شفوي',
-    nameEn: 'Idghām / Izhār Shafawī',
+    nameAr: 'الإدغام الشفوي (المِثْلان الصغيران)',
+    nameEn: 'Idghām Shafawī',
     color: 'var(--tw-idgham_shafawi)',
+    durationAr: 'حركتان',
     description:
-      'إذا جاء بعد الميم الساكنة ميم أخرى تُدغمان مع غنة، وإذا جاء أي حرف آخر غير الباء والميم تُظهر الميم من مخرجها بوضوح.',
-    letters: 'م',
-    example: 'لَهُمْ مَا',
+      'إذا جاءت ميم ساكنة بعدها ميم متحركة، تُدغم الميم الأولى في الثانية فيصيران ميمًا واحدة مشددة، مع غُنّة كاملة بمقدار حركتين. ويسمى شفويًا لأن الميم تخرج من الشفتين.',
+    letters: 'مْ + م',
+    example: 'لَهُم مَّا · أَطْعَمَهُم مِّنْ',
+  },
+  {
+    id: 'idgham_mutajanisayn',
+    category: 'idgham_types',
+    nameAr: 'إدغام المتجانسين',
+    nameEn: 'Idghām Mutajānisayn',
+    color: 'var(--tw-idgham_mutajanisayn)',
+    description:
+      'إذا التقى حرفان اتحدا في المخرج واختلفا في بعض الصفات، وكان الأول ساكنًا، أُدغم الأول في الثاني وصار النطق بالحرف الثاني مشددًا — وذلك في: التاء مع الطاء والدال، والدال مع التاء، والثاء مع الذال والتاء، والباء مع الميم.',
+    letters: 'ت→ط · ت→د · د→ت · ث→ذ · ب→م',
+    example: 'أَثْقَلَت دَّعَوَا · أُجِيبَت دَّعْوَتُكُمَا',
+  },
+  {
+    id: 'idgham_mutaqaribayn',
+    category: 'idgham_types',
+    nameAr: 'إدغام المتقاربين',
+    nameEn: 'Idghām Mutaqāribayn',
+    color: 'var(--tw-idgham_mutaqaribayn)',
+    description:
+      'إذا التقى حرفان تقاربا في المخرج والصفة، وكان الأول ساكنًا، أُدغم الأول في الثاني — وأشهر مواضعه في رواية حفص: القاف الساكنة مع الكاف، واللام الساكنة مع الراء.',
+    letters: 'ق→ك · ل→ر',
+    example: 'أَلَمْ نَخْلُقكُّمْ',
   },
   {
     id: 'qalqalah',
@@ -138,48 +177,55 @@ export const TAJWEED_RULES: TajweedRuleInfo[] = [
     nameEn: 'Qalqalah',
     color: 'var(--tw-qalqalah)',
     description:
-      'اضطراب واهتزاز في الحرف الساكن عند النطق به حتى يُسمع له نبرة قوية، وحروفها مجموعة في (قطب جد).',
+      'اهتزاز وارتعاد في صوت الحرف الساكن حتى يُسمع له نبرة قوية واضحة، وحروفها مجموعة في (قُطْبُ جَدٍّ)، وتكون صغرى إذا وقع الحرف ساكنًا في وسط الكلمة، وكبرى — وهي أقوى — إذا جاء مشددًا أو في آخر الكلمة عند الوقف.',
     letters: 'ق ط ب ج د',
-    example: 'يَخْلُقُ',
+    example: 'لَمْ يَلِدْ · أَحَدٌۢ',
   },
   {
     id: 'madda_normal',
     category: 'madd',
-    nameAr: 'المد الطبيعي',
-    nameEn: 'Madd Ṭabī‘ī (Natural)',
+    nameAr: 'المد العادي (الطبيعي)',
+    nameEn: 'Madd Normal',
     color: 'var(--tw-madda_normal)',
-    description: 'مد بمقدار حركتين لا يقوم بذاته إلا به، ولا سبب له من همز أو سكون.',
-    letters: 'ا و ي',
-    example: 'قَالُوا',
+    durationAr: 'حركتان',
+    description:
+      'مدٌّ بمقدار حركتين لا تقوم ذات الحرف إلا به، ولا يقع بعد حرف المد همز ولا سكون. ويُلَوَّن بهذا اللون في رسم المصحف العثماني: الألف الخنجرية (ــٰــ)، وواو الصلة وياءها الصغيرتان (هٰ، هِۦ) اللتان تُمدّان حركتين.',
+    letters: 'ــٰــ · ۥ · ۦ',
+    example: 'الرَّحْمَٰنِ · تَأْخُذُهُۥ',
   },
   {
     id: 'madda_permissible',
     category: 'madd',
-    nameAr: 'المد الجائز المنفصل',
-    nameEn: 'Madd Jā’iz Munfaṣil',
+    nameAr: 'المد الجائز (حروف المدّ واللِّين)',
+    nameEn: 'Madd Permissible',
     color: 'var(--tw-madda_permissible)',
+    durationAr: 'حركتان — و2 أو 4 أو 6 وقفًا',
     description:
-      'إذا وقع حرف المد في آخر كلمة والهمز في أول الكلمة التي تليها، ويُمد بمقدار 2 أو 4 أو 5 حركات.',
-    example: 'يَا أَيُّهَا',
-  },
-  {
-    id: 'madda_necessary',
-    category: 'madd',
-    nameAr: 'المد الواجب المتصل',
-    nameEn: 'Madd Wājib Muttaṣil',
-    color: 'var(--tw-madda_necessary)',
-    description:
-      'إذا وقع حرف المد والهمز في كلمة واحدة، ويجب مده بمقدار 4 أو 5 حركات وصلًا ووقفًا.',
-    example: 'السَّمَاءِ',
+      'حروف المد المكتوبة (الألف والواو والياء) تُمد طبيعيًا حركتين كما في الرَّحِيم والفِيل، ويلحق بها مدُّ اللِّين عند الوقف — الواو والياء الساكنتان المفتوح ما قبلهما كما في خَوْف وقُرَيْش — ويجوز في اللين المدُّ حركتين أو أربعًا أو ستًا.',
+    letters: 'ا و ي',
+    example: 'الرَّحِيمِ · خَوْف · قُرَيْشٍ',
   },
   {
     id: 'madda_obligatory',
     category: 'madd',
-    nameAr: 'المد اللازم',
-    nameEn: 'Madd Lāzim',
+    nameAr: 'المد الواجب (المتصل والمنفصل)',
+    nameEn: 'Madd Obligatory',
     color: 'var(--tw-madda_obligatory)',
-    description: 'إذا جاء بعد حرف المد سكون أصلي (ثابت وصلًا ووقفًا)، ويُمد وجوبًا 6 حركات.',
-    example: 'الضَّالِّينَ',
+    durationAr: '4 أو 5 حركات',
+    description:
+      'يُمد أربع أو خمس حركات في موضعين: المتصل — أن يجتمع حرف المد والهمز في كلمة واحدة كالسماء وجاء؛ والمنفصل — أن يقع حرف المد في آخر كلمة والهمز في أول التالية كـ(لَآ إِلَٰهَ)، ويلحق به مدُّ صلة الهاء الكبرى قبل الهمز.',
+    example: 'السَّمَاءِ · لَآ إِلَٰهَ · بِإِذْنِهِۦٓ',
+  },
+  {
+    id: 'madda_necessary',
+    category: 'madd',
+    nameAr: 'المد اللازم',
+    nameEn: 'Madd Necessary',
+    color: 'var(--tw-madda_necessary)',
+    durationAr: '6 حركات',
+    description:
+      'إذا جاء بعد حرف المد سكون أصلي ثابت في الوصل والوقف، وجب مدّه ست حركات بالإجماع — وهو نوعان: كلميٌّ مثقَّل كـ(الضَّآلِّين) ومخفَّف كـ(ءَآلۡـَٰٔنَ)، وحرفيٌّ في فواتح بعض السور.',
+    example: 'الضَّآلِّينَ',
   },
   {
     id: 'laam_shamsiyah',
@@ -188,8 +234,9 @@ export const TAJWEED_RULES: TajweedRuleInfo[] = [
     nameEn: 'Lām Shamsiyyah',
     color: 'var(--tw-laam_shamsiyah)',
     description:
-      'لام "أل" التعريف تُدغم في الحرف الشمسي الذي يليها فلا تُنطق، وتُشدَّد الحرف الذي بعدها.',
-    example: 'الشَّمْسُ',
+      'لام «أل» لا تُنطق وتُدغم في الحرف الشمسي الذي يليها، فيُشدَّد ذلك الحرف وتُكتب اللام في المصحف دون تشديد. وحروفها أربعة عشر، والحرف الشمسي يُعرف بوضع الشدة عليه.',
+    letters: 'ت ث د ذ ر ز س ش ص ض ط ظ ل ن',
+    example: 'الشَّمْسُ · الرَّحْمَٰنِ',
   },
   {
     id: 'ham_wasl',
@@ -197,17 +244,19 @@ export const TAJWEED_RULES: TajweedRuleInfo[] = [
     nameAr: 'همزة الوصل',
     nameEn: 'Hamzat al-Waṣl',
     color: 'var(--tw-ham_wasl)',
-    description: 'همزة زائدة يُتوصل بها للنطق بالساكن، تُنطق ابتداءً وتسقط وصلًا في درج الكلام.',
-    example: 'ٱدْخُلُوا',
+    description:
+      'ألف زائدة يُتوصَّل بها إلى النطق بالساكن بعدها، تُنطق مفتوحة أو مضمومة أو مكسورة عند الابتداء بالكلمة، وتسقط تمامًا في درج الكلام (الوصل)، وعلامتها في المصحف ألف فوقها صادة صغيرة (ٱ).',
+    example: 'ٱدْخُلُوا · ٱسْمُ',
   },
   {
     id: 'slnt',
     category: 'other',
-    nameAr: 'حرف ساكن مهمل (لا يُنطق)',
+    nameAr: 'حرف لا يُنطق (صامت)',
     nameEn: 'Silent Letter',
     color: 'var(--tw-slnt)',
-    description: 'حرف مكتوب في رسم المصحف ولا يُنطق أثناء التلاوة.',
-    example: 'لَا أَوْضَعُوا',
+    description:
+      'حرف مرسوم في خط المصحف العثماني ولا يُنطق حال التلاوة — مثل واو (أُولَئِكَ) وألف (فَلْيَعْبُدُوا) الزائدة في الرسم، ولام (ٱلْحَمْدُ) عند الوصل.',
+    example: 'أُولَئِكَ · فَلْيَعْبُدُوا',
   },
 ]
 
@@ -260,9 +309,10 @@ export function primaryRule(rules: TajweedRuleId[]): TajweedRuleId | undefined {
 
 export const TAJWEED_CATEGORIES: { id: TajweedRuleInfo['category']; nameAr: string }[] = [
   { id: 'noon_meem', nameAr: 'أحكام النون الساكنة والتنوين والميم الساكنة' },
+  { id: 'idgham_types', nameAr: 'الإدغام المتجانس والمتقارب' },
   { id: 'madd', nameAr: 'أحكام المدود' },
   { id: 'qalqalah', nameAr: 'القلقلة' },
-  { id: 'ghunnah', nameAr: 'الغنة' },
-  { id: 'lam', nameAr: 'اللامات' },
+  { id: 'ghunnah', nameAr: 'الغُنّة' },
+  { id: 'lam', nameAr: 'أحكام اللام' },
   { id: 'other', nameAr: 'أحكام أخرى' },
 ]

@@ -48,26 +48,36 @@ export function QuranPage() {
 
   if (!selected) {
     return (
-      <div className="space-y-6">
-        <h1 className="text-2xl font-black text-emerald-900 dark:text-brand-50">المصحف الملوّن</h1>
-        {error && <p className="text-red-600">{error}</p>}
-        <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+      <div className="space-y-8">
+        <div>
+          <h1 className="text-gilded font-display text-3xl font-bold">المصحف الملوّن</h1>
+          <p className="mt-2 text-sm text-muted">اختر سورة لعرضها بألوان أحكام التجويد مع تلاوة الشيخ العفاسي.</p>
+          <div className="hair-gold mt-4 max-w-sm" />
+        </div>
+        {error && <p className="rounded-xl border border-danger/40 bg-danger-soft px-4 py-3 text-sm font-bold text-danger">{error}</p>}
+        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
           {surahs.map((s) => (
             <button
               key={s.number}
               onClick={() => navigate(`/quran/${s.number}`)}
-              className="flex items-center justify-between rounded-xl border border-brand-200/70 bg-white/70 px-4 py-3 text-right shadow-sm transition hover:-translate-y-0.5 hover:shadow-md dark:border-brand-900/50 dark:bg-white/5"
+              className="card-lux card-hover group flex items-center justify-between gap-3 px-4 py-3.5 text-right"
             >
-              <span className="flex items-center gap-3">
-                <span className="flex h-8 w-8 items-center justify-center rounded-full bg-brand-600 text-xs font-bold text-white">
-                  {s.number}
+              <span className="flex items-center gap-3.5">
+                <span aria-hidden className="relative flex h-11 w-11 items-center justify-center text-gold">
+                  <span className="absolute inset-0 rotate-45 rounded-[10px] border border-gold/50 bg-accent-soft/60 transition-transform duration-300 group-hover:rotate-[135deg]" />
+                  <span className="relative font-display text-sm font-bold">{s.number}</span>
                 </span>
                 <span>
-                  <span className="block font-quran text-lg font-bold text-emerald-900 dark:text-brand-50">{s.name}</span>
-                  <span className="block text-xs text-emerald-900/50 dark:text-brand-100/50">
-                    {s.englishNameTranslation} · {s.numberOfAyahs} آية
+                  <span className="block font-display text-lg font-bold leading-snug text-ink transition-colors group-hover:text-accent">
+                    {s.name}
+                  </span>
+                  <span className="block text-[11px] font-medium text-faint">
+                    {s.englishNameTranslation} · {s.numberOfAyahs} آية · {s.revelationType === 'Meccan' ? 'مكية' : 'مدنية'}
                   </span>
                 </span>
+              </span>
+              <span aria-hidden className="text-lg text-gold/60 transition group-hover:text-gold">
+                ﴿
               </span>
             </button>
           ))}
@@ -79,47 +89,67 @@ export function QuranPage() {
   const meta = surahs.find((s) => s.number === selected)
 
   return (
-    <div className="space-y-6">
-      <button onClick={() => navigate('/quran')} className="text-sm text-brand-700 hover:underline dark:text-brand-300">
-        ← جميع السور
+    <div className="space-y-7">
+      <button
+        onClick={() => navigate('/quran')}
+        className="inline-flex items-center gap-1.5 text-sm font-bold text-accent transition hover:text-gold"
+      >
+        <span aria-hidden>→</span> جميع السور
       </button>
 
-      <div className="flex flex-wrap items-center justify-between gap-4">
-        <h1 className="font-quran text-3xl font-bold text-emerald-900 dark:text-brand-50">
-          {meta ? meta.name : `سورة ${selected}`}
-        </h1>
-        <label className="flex items-center gap-2 text-sm text-emerald-900/80 dark:text-brand-100/80">
-          <input type="checkbox" checked={colored} onChange={(e) => setColored(e.target.checked)} className="accent-brand-600" />
+      <div className="card-lux pattern-panel relative flex flex-wrap items-center justify-between gap-4 overflow-hidden p-5 sm:p-6">
+        <div className="relative text-center">
+          <h1 className="font-display text-3xl font-bold text-ink">{meta ? meta.name : `سورة ${selected}`}</h1>
+          {meta && (
+            <p className="mt-1 text-xs font-medium text-faint">
+              {meta.revelationType === 'Meccan' ? 'مكية' : 'مدنية'} · {meta.numberOfAyahs} آية
+            </p>
+          )}
+        </div>
+        <label className="relative flex cursor-pointer items-center gap-2.5 rounded-full border border-line bg-elevated/70 px-4 py-2 text-sm font-bold text-muted transition hover:border-gold/60">
+          <input
+            type="checkbox"
+            checked={colored}
+            onChange={(e) => setColored(e.target.checked)}
+            className="h-4 w-4 accent-[var(--c-gold)]"
+          />
           تلوين أحكام التجويد
         </label>
       </div>
 
       {colored && (
-        <div className="rounded-xl border border-brand-200/60 bg-white/60 p-3 dark:border-brand-900/40 dark:bg-white/5">
+        <div className="card-lux p-4">
+          <p className="title-ornament mb-3 font-display text-sm font-bold text-gold">دليل الألوان — اضغط على أي كلمة ملوّنة لمعرفة حكمها</p>
           <TajweedLegend compact />
         </div>
       )}
 
-      {error && <p className="text-red-600">{error}</p>}
-      {loading && <p className="text-emerald-900/60 dark:text-brand-100/60">جاري التحميل…</p>}
+      {error && <p className="rounded-xl border border-danger/40 bg-danger-soft px-4 py-3 text-sm font-bold text-danger">{error}</p>}
+      {loading && (
+        <div className="flex items-center justify-center gap-3 py-10 text-muted">
+          <span className="h-5 w-5 animate-spin rounded-full border-2 border-gold border-t-transparent" aria-hidden />
+          جاري التحميل…
+        </div>
+      )}
 
-      <div className="space-y-4">
+      <div className="space-y-5">
         {ayahs.map((ayah) => (
-          <div
-            key={ayah.number}
-            className="flex items-start gap-3 rounded-xl border border-brand-200/50 bg-white/50 p-4 dark:border-brand-900/40 dark:bg-white/5"
-          >
+          <div key={ayah.number} className="ayah-frame group flex items-start gap-3 p-5 transition-shadow hover:shadow-[var(--shadow-lux)]">
             <button
               onClick={() => playAyah(ayah)}
-              className="mt-1 flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-brand-600 text-white shadow-sm transition hover:bg-brand-700"
-              aria-label="استماع"
+              className="mt-1.5 flex h-10 w-10 shrink-0 items-center justify-center rounded-full border border-gold/50 bg-accent-soft text-accent shadow-sm transition hover:scale-105 hover:border-gold hover:text-gold"
+              aria-label={playingAyah === ayah.number ? 'إيقاف الاستماع' : 'استماع'}
             >
-              {playingAyah === ayah.number ? '❚❚' : '▶'}
+              <span className="text-sm">{playingAyah === ayah.number ? '❚❚' : '▶'}</span>
             </button>
             <div className="flex-1">
               <TajweedText segments={ayah.segments} colored={colored} className="font-quran text-2xl" />
-              <span className="mr-2 inline-flex h-6 w-6 items-center justify-center rounded-full border border-brand-300 text-[10px] font-bold text-brand-700 dark:border-brand-700 dark:text-brand-300">
-                {ayah.numberInSurah}
+              <span
+                aria-label={`الآية ${ayah.numberInSurah}`}
+                className="relative mr-2 inline-flex h-7 w-7 items-center justify-center align-middle text-[10px] font-black text-gold"
+              >
+                <span aria-hidden className="absolute inset-0 rotate-45 rounded-[6px] border border-gold/60 bg-accent-soft/50" />
+                <span className="relative">{ayah.numberInSurah}</span>
               </span>
             </div>
           </div>
