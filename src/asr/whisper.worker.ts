@@ -6,6 +6,7 @@ import {
   type AutomaticSpeechRecognitionPipeline,
   type WhisperForConditionalGeneration,
 } from '@huggingface/transformers'
+import { applyVariant, ORTHOGRAPHY_VARIANTS, type OrthographyVariant } from '../lib/orthography'
 
 env.allowLocalModels = false
 
@@ -26,6 +27,10 @@ const ORT_WASM_PREFIXES = [
   `https://cdn.jsdelivr.net/npm/onnxruntime-web@${ORT_STABLE_VERSION}/dist/`,
   `https://unpkg.com/onnxruntime-web@${ORT_STABLE_VERSION}/dist/`,
 ]
+/** A mean per-word confidence at or above this means the spelling is plainly the right one,
+ * so there is no point paying for another forward pass to check the remaining variants. */
+const CONFIDENT_ENOUGH_TO_STOP = 0.15
+
 function ortWasmPathsFor(prefix: string) {
   return {
     mjs: `${prefix}ort-wasm-simd-threaded.asyncify.mjs`,
@@ -61,6 +66,10 @@ export interface ForcedAlignmentResult {
    * extraction wasn't available/successful for that word. Null entirely if this export
    * doesn't support cross-attention output at all. */
   wordTimings: ([number, number] | null)[] | null
+  /** Which spelling of the reference the model was asked to justify — see orthography.ts. */
+  variant: OrthographyVariant
+  /** Mean confidence over all words, used to choose between spellings. */
+  meanConfidence: number
 }
 
 /** Pulls the per-layer cross-attention tensors out of a raw model output object. ONNX
@@ -102,8 +111,9 @@ async function scoreAndAlignReferenceWords(
   transcriber: AutomaticSpeechRecognitionPipeline,
   audio: Float32Array,
   referenceWords: string[],
+  variant: OrthographyVariant,
 ): Promise<ForcedAlignmentResult> {
-  if (referenceWords.length === 0) return { confidences: [], wordTimings: [] }
+  if (referenceWords.length === 0) return { confidences: [], wordTimings: [], variant, meanConfidence: 0 }
 
   const model = transcriber.model as WhisperForConditionalGeneration
   const tokenizer = transcriber.tokenizer
@@ -117,7 +127,8 @@ async function scoreAndAlignReferenceWords(
   const wordSpans: [number, number][] = []
   const targetTokens: number[] = []
   for (const word of referenceWords) {
-    const ids: number[] = tokenizer.encode(' ' + word, { add_special_tokens: false })
+    const spelled = applyVariant(word, variant)
+    const ids: number[] = tokenizer.encode(' ' + spelled, { add_special_tokens: false })
     wordSpans.push([targetTokens.length, targetTokens.length + ids.length])
     targetTokens.push(...ids)
   }
@@ -180,16 +191,17 @@ async function scoreAndAlignReferenceWords(
   // already covers the whole sequence in one go, so we simply wrap it as if it were one
   // step containing every position.
   let wordTimings: ([number, number] | null)[] | null = null
-  try {
-    const crossAttentionLayers = getCrossAttentionLayers(output)
-    const alignmentHeads = generationConfig.alignment_heads
-    const featureExtractor = processor.feature_extractor
-    if (crossAttentionLayers && alignmentHeads && featureExtractor) {
-      const featureExtractorConfig = featureExtractor.config as { hop_length: number; chunk_length: number }
-      const maxSourcePositions = (model.config as unknown as { max_source_positions: number }).max_source_positions
-      const numFrames = Math.floor(audio.length / featureExtractorConfig.hop_length)
-      const timePrecision = featureExtractorConfig.chunk_length / maxSourcePositions
+  const crossAttentionLayers = getCrossAttentionLayers(output)
+  const featureExtractor = processor.feature_extractor
+  if (crossAttentionLayers && featureExtractor) {
+    const featureExtractorConfig = featureExtractor.config as { hop_length: number; chunk_length: number }
+    const maxSourcePositions = (model.config as unknown as { max_source_positions: number }).max_source_positions
+    const numFrames = Math.floor(audio.length / featureExtractorConfig.hop_length)
+    const timePrecision = featureExtractorConfig.chunk_length / maxSourcePositions
 
+    try {
+      const alignmentHeads = generationConfig.alignment_heads
+      if (!alignmentHeads) throw new Error('no alignment heads on this checkpoint')
       const tokenTimestamps = model._extract_token_timestamps(
         { cross_attentions: [crossAttentionLayers], sequences: decoder_input_ids },
         alignmentHeads,
@@ -199,19 +211,98 @@ async function scoreAndAlignReferenceWords(
       )
       const ts = tokenTimestamps.data as Float32Array
       const at = (idx: number) => (idx >= 0 && idx < ts.length ? ts[idx] : null)
-
       wordTimings = wordSpans.map(([start, end]) => {
         const startTime = at(initLength + start)
         const endTime = at(initLength + end) ?? at(ts.length - 1)
         if (startTime === null || endTime === null) return null
         return [startTime, Math.max(endTime, startTime)]
       })
+    } catch {
+      // `alignment_heads` is a curated per-checkpoint list of the attention heads that track
+      // audio position, and community ONNX conversions frequently ship without it — in which
+      // case the call above throws and, until now, every word silently came back with no
+      // timing at all, leaving the madd and qalqalah checks nothing to measure. Averaging
+      // every head is cruder than using the curated ones, but it needs no such list and is
+      // far better than no timing at all.
+      wordTimings = timingsFromAveragedAttention(
+        crossAttentionLayers,
+        wordSpans,
+        initLength,
+        decoderInputIdList.length,
+        Math.floor(numFrames / 2), // encoder positions cover two mel frames each
+        timePrecision,
+      )
     }
-  } catch {
-    wordTimings = null
   }
 
-  return { confidences, wordTimings }
+  const meanConfidence =
+    confidences.length > 0 ? confidences.reduce((sum, c) => sum + c, 0) / confidences.length : 0
+
+  return { confidences, wordTimings, variant, meanConfidence }
+}
+
+/**
+ * Word timings from cross-attention averaged over every head and layer, for checkpoints that
+ * ship no `alignment_heads` list. Each decoder position is placed at the audio frame it
+ * attends to most, with the positions forced to advance monotonically — recitation moves
+ * forward through the audio, so a later token can never belong to an earlier moment, and
+ * clamping that way keeps one noisy head from throwing a word backwards.
+ */
+function timingsFromAveragedAttention(
+  layers: Tensor[],
+  wordSpans: [number, number][],
+  initLength: number,
+  decoderLength: number,
+  maxEncoderFrame: number,
+  timePrecision: number,
+): ([number, number] | null)[] | null {
+  const first = layers[0]
+  const dims = first.dims
+  if (dims.length < 2) return null
+  const encoderPositions = dims[dims.length - 1]
+  const decoderPositions = dims[dims.length - 2]
+  if (decoderPositions !== decoderLength || encoderPositions <= 0) return null
+
+  // Sum every head of every layer into one [decoder × encoder] attention map.
+  const summed = new Float64Array(decoderPositions * encoderPositions)
+  let contributions = 0
+  for (const layer of layers) {
+    const data = layer.data as Float32Array
+    const heads = Math.max(1, Math.floor(data.length / (decoderPositions * encoderPositions)))
+    for (let h = 0; h < heads; h++) {
+      const base = h * decoderPositions * encoderPositions
+      for (let i = 0; i < decoderPositions * encoderPositions; i++) summed[i] += data[base + i]
+      contributions++
+    }
+  }
+  if (contributions === 0) return null
+
+  const frameLimit = Math.max(1, Math.min(encoderPositions, maxEncoderFrame || encoderPositions))
+  const frameOf: number[] = new Array(decoderPositions).fill(0)
+  let previous = 0
+  for (let t = 0; t < decoderPositions; t++) {
+    let bestFrame = previous
+    let bestWeight = -Infinity
+    for (let s = previous; s < frameLimit; s++) {
+      const weight = summed[t * encoderPositions + s]
+      if (weight > bestWeight) {
+        bestWeight = weight
+        bestFrame = s
+      }
+    }
+    frameOf[t] = bestFrame
+    previous = bestFrame
+  }
+
+  const timeAt = (decoderPos: number) =>
+    decoderPos >= 0 && decoderPos < decoderPositions ? frameOf[decoderPos] * timePrecision : null
+
+  return wordSpans.map(([start, end]) => {
+    const startTime = timeAt(initLength + start)
+    const endTime = timeAt(initLength + end) ?? timeAt(decoderPositions - 1)
+    if (startTime === null || endTime === null) return null
+    return [startTime, Math.max(endTime, startTime)]
+  })
 }
 
 self.onmessage = async (event: MessageEvent<IncomingMessage>) => {
@@ -280,18 +371,31 @@ self.onmessage = async (event: MessageEvent<IncomingMessage>) => {
       // Forced-decoding confidence + timing is the important new signal. If this model's
       // ONNX export doesn't support a plain (non-generate) forward call the way we expect,
       // fail soft: the caller falls back to text-match correctness like before.
-      let wordConfidences: number[] | null = null
-      let wordTimings: ([number, number] | null)[] | null = null
-      try {
-        const forced = await scoreAndAlignReferenceWords(transcriber, msg.audio, msg.referenceWords)
-        wordConfidences = forced.confidences
-        wordTimings = forced.wordTimings
-      } catch {
-        wordConfidences = null
-        wordTimings = null
+      // Which spelling of the reference this checkpoint finds probable is a property of the
+      // transcripts it was fine-tuned on, which we cannot know up front — so try them and
+      // keep the best, stopping as soon as one scores well enough to be obviously right.
+      // Each attempt is a single non-autoregressive forward pass.
+      let best: ForcedAlignmentResult | null = null
+      for (const variant of ORTHOGRAPHY_VARIANTS) {
+        try {
+          const attempt = await scoreAndAlignReferenceWords(transcriber, msg.audio, msg.referenceWords, variant)
+          if (!best || attempt.meanConfidence > best.meanConfidence) best = attempt
+          if (attempt.meanConfidence >= CONFIDENT_ENOUGH_TO_STOP) break
+        } catch {
+          // This export may not support a plain forward call at all; fail soft and let the
+          // caller fall back to text-match correctness.
+        }
       }
 
-      self.postMessage({ type: 'result', text: result.text, chunks, wordConfidences, wordTimings, requestId: msg.requestId })
+      self.postMessage({
+        type: 'result',
+        text: result.text,
+        chunks,
+        wordConfidences: best?.confidences ?? null,
+        wordTimings: best?.wordTimings ?? null,
+        orthographyVariant: best?.variant ?? null,
+        requestId: msg.requestId,
+      })
     } catch (err) {
       self.postMessage({ type: 'error', error: (err as Error).message, requestId: msg.requestId })
     }

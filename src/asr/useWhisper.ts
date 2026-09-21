@@ -14,6 +14,9 @@ export interface TranscribeResult {
    * known text), same order as `referenceWords`. Null if unavailable this time — callers
    * should fall back to the free decode's approximate word timing in `chunks`. */
   wordTimings: ([number, number] | null)[] | null
+  /** Which spelling of the reference the model was asked to justify — the worker tries
+   * several and keeps whichever it finds most probable. Null when the forced pass failed. */
+  orthographyVariant: string | null
 }
 
 interface ProgressInfo {
@@ -63,6 +66,7 @@ export function useWhisper() {
           chunks: (data.chunks as TimedChunk[]) ?? [],
           wordConfidences: (data.wordConfidences as number[] | null) ?? null,
           wordTimings: (data.wordTimings as ([number, number] | null)[] | null) ?? null,
+          orthographyVariant: (data.orthographyVariant as string | null) ?? null,
         })
         pendingRef.current = null
       } else if (data.type === 'error') {

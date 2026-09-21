@@ -16,6 +16,20 @@ const CONFIDENCE_ABSOLUTE_FLOOR = 0.05
 // all, and the results card says so rather than presenting a misleading percentage.
 export const PASSAGE_MATCH_FLOOR = 0.35
 
+/**
+ * If the median confidence across a whole recitation is under this, the forced pass is not
+ * measuring anything — a correctly recited word scores no better than a skipped one, and
+ * whatever separates them is noise in the fourth decimal place. That is a broken signal, not
+ * a strict one, and a verdict drawn from it is a coin toss dressed up as a judgement.
+ *
+ * This is not hypothetical: a perfect recitation of Sūrat al-Qadr came back with every word
+ * between 0.0% and 0.2%, and two words were condemned purely by where that noise happened to
+ * fall. The signal is discarded in that case and correctness falls back to the transcript
+ * alone, which the results card states plainly rather than quietly pretending to more
+ * precision than it has.
+ */
+export const CONFIDENCE_DEGENERATE_MEDIAN = 0.01
+
 export interface AyahRange {
   ayahNumber: number
   numberInSurah: number
@@ -51,6 +65,13 @@ export function bucketByAyah(aligned: AlignedWord[], ayahRanges: AyahRange[]): A
     buckets[Math.min(ayahIdx, buckets.length - 1)].push(w)
   }
   return buckets
+}
+
+/** Whether the forced-decoding pass produced a distribution worth judging words by — see
+ * CONFIDENCE_DEGENERATE_MEDIAN. The results card uses this to say which mode it is in. */
+export function isConfidenceUsable(wordConfidences: number[] | null): boolean {
+  if (!wordConfidences || wordConfidences.length === 0) return false
+  return median(wordConfidences) >= CONFIDENCE_DEGENERATE_MEDIAN
 }
 
 function median(values: number[]): number {
@@ -105,7 +126,12 @@ export function buildWordVerdicts(
       if (reachedAt(i)) reachedConfidences.push(wordConfidences[i] ?? 0)
     }
   }
-  const outlierFloor = median(reachedConfidences) * CONFIDENCE_OUTLIER_FACTOR
+  const medianConfidence = median(reachedConfidences)
+  // A confidence distribution this flat and this low is measuring nothing — discard it
+  // rather than let noise decide verdicts. See CONFIDENCE_DEGENERATE_MEDIAN.
+  const usableConfidences =
+    wordConfidences && medianConfidence >= CONFIDENCE_DEGENERATE_MEDIAN ? wordConfidences : null
+  const outlierFloor = medianConfidence * CONFIDENCE_OUTLIER_FACTOR
 
   return Array.from({ length: wordCount }, (_, i): WordVerdict => {
     if (!reachedAt(i)) return { refIndex: i, status: 'unreached', confidence: null, hypGuess: null, freeStatus: null }
@@ -115,11 +141,12 @@ export function buildWordVerdicts(
     const hypGuess = freeEntry?.hypWord ?? null
     const textDisagrees = freeStatus !== 'correct'
 
-    if (!wordConfidences) {
-      return { refIndex: i, status: textDisagrees ? 'wrong' : 'correct', confidence: null, hypGuess, freeStatus }
+    if (!usableConfidences) {
+      const confidence = wordConfidences ? (wordConfidences[i] ?? 0) : null
+      return { refIndex: i, status: textDisagrees ? 'wrong' : 'correct', confidence, hypGuess, freeStatus }
     }
 
-    const confidence = wordConfidences[i] ?? 0
+    const confidence = usableConfidences[i] ?? 0
     const isOutlier = confidence < outlierFloor
     const belowFloor = confidence < CONFIDENCE_ABSOLUTE_FLOOR
     const acousticDoubt = isOutlier || belowFloor

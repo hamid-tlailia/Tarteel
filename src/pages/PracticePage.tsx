@@ -20,6 +20,7 @@ import { buildCoachTips } from '../lib/coach'
 import {
   bucketByAyah,
   buildWordVerdicts,
+  isConfidenceUsable,
   PASSAGE_MATCH_FLOOR,
   type AyahRange,
   type WordVerdict,
@@ -237,6 +238,7 @@ export function PracticePage() {
   const [liveSnapshot, setLiveSnapshot] = useState<LiveSnapshot | null>(null)
   const [passageMatch, setPassageMatch] = useState(0)
   const [diagnostics, setDiagnostics] = useState<WordDiagnostic[]>([])
+  const [orthographyVariant, setOrthographyVariant] = useState<string | null>(null)
 
   const recorderRef = useRef<MicRecorder | null>(null)
   const liveTrackerRef = useRef<LiveTajweedTracker | null>(null)
@@ -320,6 +322,7 @@ export function PracticePage() {
     setLiveSnapshot(null)
     setPassageMatch(0)
     setDiagnostics([])
+    setOrthographyVariant(null)
     liveTrackerRef.current = null
   }
 
@@ -494,12 +497,18 @@ export function PracticePage() {
         setMicError('لم يتم رصد صوت واضح. حاول التسجيل مرة أخرى بصوت أعلى وأقرب للميكروفون.')
         return
       }
+      // Forced decoding is fed the words as the muṣḥaf actually spells them, NOT the
+      // comparison-normalized form: it asks the model to justify these exact tokens, so the
+      // spelling has to be one the model would itself produce. (The worker tries a few
+      // spellings of these and keeps whichever scores best — see orthography.ts.)
       const {
         text,
         chunks: resultChunks,
         wordConfidences: confidences,
         wordTimings: timings,
-      } = await whisper.transcribe(trimmed, referenceNormalized)
+        orthographyVariant,
+      } = await whisper.transcribe(trimmed, referenceWords.map((w) => w.word))
+      setOrthographyVariant(orthographyVariant)
       const verdicts = applyResult(text, resultChunks, confidences, timings, trimmed)
       if (meta) {
         const reached = verdicts.filter((v) => v.status !== 'unreached')
@@ -728,8 +737,10 @@ export function PracticePage() {
             <div className="text-sm font-semibold text-muted">
               {score.correct} صحيحة من {score.total}
             </div>
-            {!wordConfidences && (
-              <span className="rounded-full bg-warn-soft px-3 py-1 text-xs font-bold text-warn">وضع احتياطي: مطابقة نصية فقط</span>
+            {!isConfidenceUsable(wordConfidences) && (
+              <span className="rounded-full bg-warn-soft px-3 py-1 text-xs font-bold text-warn">
+                وضع احتياطي: مطابقة نصية فقط
+              </span>
             )}
           </div>
 
@@ -818,8 +829,10 @@ export function PracticePage() {
               </summary>
               <div className="overflow-x-auto px-4 pb-4">
                 <p className="mb-3 text-xs leading-relaxed text-faint">
-                  تطابق المقطع ككل: {Math.round(passageMatch * 100)}%. «الثقة» احتمال النموذج للكلمة، و«المقيس/المتوقع»
-                  زمنها بالملي ثانية. إن ظهر حكم خاطئ، فهذه الأرقام تكفي لضبط العتبات بدقة.
+                  تطابق المقطع ككل: {Math.round(passageMatch * 100)}% · رسم النص المعتمد للمطابقة الصوتية:{' '}
+                  {orthographyVariant ?? 'غير متاح'} · إشارة الثقة:{' '}
+                  {isConfidenceUsable(wordConfidences) ? 'صالحة' : 'مهمَلة (مسطّحة قرب الصفر)'}. «الثقة» احتمال النموذج
+                  للكلمة، و«المقيس/المتوقع» زمنها بالملي ثانية.
                 </p>
                 <table className="w-full text-right text-xs" dir="rtl">
                   <thead className="text-faint">
