@@ -109,15 +109,16 @@ function buildWordVerdicts(
 
 function AyahBadge({ n }: { n: number }) {
   return (
-    <span className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full border border-brand-300 text-[10px] font-bold text-brand-700 dark:border-brand-700 dark:text-brand-300">
-      {n}
+    <span aria-label={`الآية ${n}`} className="relative inline-flex h-7 w-7 shrink-0 items-center justify-center text-[10px] font-black text-gold">
+      <span aria-hidden className="absolute inset-0 rotate-45 rounded-[6px] border border-gold/60 bg-accent-soft/50" />
+      <span className="relative">{n}</span>
     </span>
   )
 }
 
-/** Renders one ayah's recited words: its own tajweed color when correct, orange when the
- * madd was dropped entirely, amber when just short, red when wrong/missing, blue for extra
- * words the reciter said that aren't in the text. */
+/** Renders one ayah's recited words: its own tajweed color when correct, severe-orange when
+ * the madd was dropped entirely, amber when just short, red when wrong/missing, blue for
+ * extra words the reciter said that aren't in the text. */
 function ComparedWords({
   verdicts,
   referenceWords,
@@ -144,10 +145,7 @@ function ComparedWords({
           return (
             <span
               key={v.refIndex}
-              className={clsx(
-                'rounded bg-red-100 px-1.5 py-0.5 text-red-700 dark:bg-red-900/30 dark:text-red-200',
-                v.freeStatus === 'missing' && 'line-through decoration-2',
-              )}
+              className={clsx('rounded-lg bg-danger-soft px-1.5 py-0.5 text-danger', v.freeStatus === 'missing' && 'line-through decoration-2')}
               title={`${v.hypGuess ? `سمعت: ${v.hypGuess}` : 'لم يتطابق مع النص'}${confidenceLabel}`}
             >
               {refWord?.word}
@@ -161,10 +159,8 @@ function ComparedWords({
             <span
               key={v.refIndex}
               className={clsx(
-                'rounded px-1.5 py-0.5 underline decoration-wavy',
-                severe
-                  ? 'bg-orange-100 text-orange-900 decoration-orange-600 dark:bg-orange-900/30 dark:text-orange-200'
-                  : 'bg-amber-100 text-amber-800 decoration-amber-500 dark:bg-amber-900/30 dark:text-amber-200',
+                'rounded-lg px-1.5 py-0.5 underline decoration-wavy',
+                severe ? 'bg-severe-soft text-severe decoration-severe' : 'bg-warn-soft text-warn decoration-warn',
               )}
               title={
                 (severe
@@ -184,17 +180,16 @@ function ComparedWords({
         )
       })}
       {extraWords.map((w, i) => (
-        <span
-          key={`extra-${i}`}
-          className="rounded bg-sky-100 px-1.5 py-0.5 text-sky-700 dark:bg-sky-900/30 dark:text-sky-200"
-          title="كلمة زائدة قيلت ولم ترد في النص"
-        >
+        <span key={`extra-${i}`} className="rounded-lg bg-info-soft px-1.5 py-0.5 text-info" title="كلمة زائدة قيلت ولم ترد في النص">
           {w}
         </span>
       ))}
     </div>
   )
 }
+
+const SELECT_CLASS =
+  'w-full rounded-xl border border-line bg-elevated px-3 py-2 text-sm font-medium text-ink shadow-sm transition focus:border-gold focus:outline-none'
 
 export function PracticePage() {
   const [surahs, setSurahs] = useState<SurahMeta[]>([])
@@ -438,23 +433,20 @@ export function PracticePage() {
   const ayahOptions = Array.from({ length: ayahs.length }, (_, i) => i + 1)
 
   return (
-    <div className="mx-auto max-w-3xl space-y-6">
+    <div className="mx-auto max-w-3xl space-y-7">
       <div>
-        <h1 className="text-2xl font-black text-emerald-900 dark:text-brand-50">التلاوة والتصحيح الصوتي</h1>
-        <p className="mt-1 text-sm text-emerald-900/70 dark:text-brand-100/70">
+        <h1 className="text-gilded font-display text-3xl font-bold">التلاوة والتصحيح الصوتي</h1>
+        <p className="mt-2 text-sm leading-relaxed text-muted">
           اختر مقطعًا من القرآن، سجّل تلاوتك، وستنكشف كل آية بمقارنتها الحيّة تحت النص الصحيح كلما وصلت إليها أثناء
           القراءة — بمقارنة صوتية كاملة داخل متصفحك دون رفع صوتك إلى أي خادم.
         </p>
+        <div className="hair-gold mt-4 max-w-sm" />
       </div>
 
-      <div className="grid gap-3 rounded-2xl border border-brand-200/70 bg-white/70 p-4 sm:grid-cols-3 dark:border-brand-900/50 dark:bg-white/5">
+      <div className="card-lux grid gap-4 p-5 sm:grid-cols-3">
         <label className="text-sm">
-          <span className="mb-1 block text-emerald-900/70 dark:text-brand-100/70">السورة</span>
-          <select
-            value={surahNumber}
-            onChange={(e) => setSurahNumber(Number(e.target.value))}
-            className="w-full rounded-lg border border-brand-200 bg-white px-2 py-1.5 dark:border-brand-800 dark:bg-emerald-950"
-          >
+          <span className="mb-1.5 block text-xs font-bold text-faint">السورة</span>
+          <select value={surahNumber} onChange={(e) => setSurahNumber(Number(e.target.value))} className={SELECT_CLASS}>
             {surahs.map((s) => (
               <option key={s.number} value={s.number}>
                 {s.number}. {s.name}
@@ -463,12 +455,8 @@ export function PracticePage() {
           </select>
         </label>
         <label className="text-sm">
-          <span className="mb-1 block text-emerald-900/70 dark:text-brand-100/70">من آية</span>
-          <select
-            value={fromAyah}
-            onChange={(e) => handleFromChange(Number(e.target.value))}
-            className="w-full rounded-lg border border-brand-200 bg-white px-2 py-1.5 dark:border-brand-800 dark:bg-emerald-950"
-          >
+          <span className="mb-1.5 block text-xs font-bold text-faint">من آية</span>
+          <select value={fromAyah} onChange={(e) => handleFromChange(Number(e.target.value))} className={SELECT_CLASS}>
             {ayahOptions.map((n) => (
               <option key={n} value={n}>
                 {n}
@@ -477,12 +465,8 @@ export function PracticePage() {
           </select>
         </label>
         <label className="text-sm">
-          <span className="mb-1 block text-emerald-900/70 dark:text-brand-100/70">إلى آية</span>
-          <select
-            value={toAyah}
-            onChange={(e) => handleToChange(Number(e.target.value))}
-            className="w-full rounded-lg border border-brand-200 bg-white px-2 py-1.5 dark:border-brand-800 dark:bg-emerald-950"
-          >
+          <span className="mb-1.5 block text-xs font-bold text-faint">إلى آية</span>
+          <select value={toAyah} onChange={(e) => handleToChange(Number(e.target.value))} className={SELECT_CLASS}>
             {ayahOptions.map((n) => (
               <option key={n} value={n}>
                 {n}
@@ -492,12 +476,12 @@ export function PracticePage() {
         </label>
       </div>
 
-      <div className="space-y-4 rounded-2xl border border-brand-200/70 bg-white/70 p-5 dark:border-brand-900/50 dark:bg-white/5">
+      <div className="card-lux space-y-5 p-6">
         <div>
-          <h2 className="mb-2 text-sm font-bold text-brand-700 dark:text-brand-300">النص المرجعي</h2>
-          <div className="space-y-2">
+          <h2 className="title-ornament mb-3 font-display text-base font-bold text-accent">النص المرجعي</h2>
+          <div className="space-y-3">
             {selectedAyahs.map((a) => (
-              <div key={a.number} className="flex items-start gap-2">
+              <div key={a.number} className="ayah-frame flex items-start gap-2 p-4">
                 <TajweedText segments={a.segments} className="font-quran flex-1 text-2xl" />
                 <AyahBadge n={a.numberInSurah} />
               </div>
@@ -506,12 +490,16 @@ export function PracticePage() {
         </div>
 
         {(recording || wordVerdicts) && (
-          <div className="border-t border-brand-100 pt-3 dark:border-brand-900/50">
-            <h2 className="mb-2 flex items-center gap-2 text-sm font-bold text-brand-700 dark:text-brand-300">
+          <div className="border-t border-line pt-5">
+            <h2 className="title-ornament mb-3 flex items-center gap-2 font-display text-base font-bold text-accent">
               ما تقرأه الآن
               {recording && !isFinal && (
-                <span className="flex items-center gap-1 text-xs font-normal text-emerald-900/50 dark:text-brand-100/50">
-                  <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-red-500" /> مباشر
+                <span className="flex items-center gap-1.5 text-xs font-semibold text-faint">
+                  <span className="relative flex h-2 w-2">
+                    <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-danger opacity-75" />
+                    <span className="relative inline-flex h-2 w-2 rounded-full bg-danger" />
+                  </span>
+                  مباشر
                 </span>
               )}
             </h2>
@@ -532,7 +520,7 @@ export function PracticePage() {
                           extraWords={extraWords}
                         />
                       ) : (
-                        <div className="rounded-lg border border-dashed border-brand-200/70 bg-brand-50/40 px-3 py-2.5 text-sm text-emerald-900/30 dark:border-brand-800/60 dark:bg-white/5 dark:text-brand-100/30">
+                        <div className="rounded-xl border border-dashed border-line bg-line-soft/40 px-3 py-2.5 text-sm text-faint">
                           ⋯ لم تصل إلى هذه الآية بعد
                         </div>
                       )}
@@ -546,43 +534,38 @@ export function PracticePage() {
         )}
       </div>
 
-      <div className="rounded-2xl border border-brand-200/70 bg-white/70 p-5 dark:border-brand-900/50 dark:bg-white/5">
+      <div className="card-lux p-6">
         {whisper.status !== 'ready' && (
           <div>
-            <p className="mb-3 text-sm text-emerald-900/80 dark:text-brand-100/80">
+            <p className="mb-4 text-sm leading-relaxed text-muted">
               يعمل التعرّف الصوتي بنموذج Whisper محمّل بالكامل داخل متصفحك (لا حاجة لخادم). يلزم تحميله مرة واحدة (~قد
               يستغرق دقيقة حسب سرعة الإنترنت).
             </p>
             {whisper.status === 'idle' && (
-              <button
-                onClick={whisper.load}
-                className="rounded-full bg-brand-600 px-5 py-2 font-bold text-white shadow transition hover:bg-brand-700"
-              >
+              <button onClick={whisper.load} className="btn-gold">
                 تحميل نموذج التعرّف الصوتي
               </button>
             )}
             {whisper.status === 'loading' && (
               <div>
-                <div className="h-2 w-full overflow-hidden rounded-full bg-brand-100 dark:bg-brand-900/40">
+                <div className="h-2.5 w-full overflow-hidden rounded-full bg-line-soft">
                   <div
-                    className="h-full rounded-full bg-brand-600 transition-all"
-                    style={{ width: `${whisper.progress}%` }}
+                    className="h-full rounded-full transition-all duration-300"
+                    style={{
+                      width: `${whisper.progress}%`,
+                      background: 'linear-gradient(90deg, var(--c-gold-deep), var(--c-gold), var(--c-gold-soft))',
+                    }}
                   />
                 </div>
-                <p className="mt-1 text-xs text-emerald-900/60 dark:text-brand-100/60">
-                  جاري التحميل… {Math.round(whisper.progress)}%
-                </p>
+                <p className="mt-2 text-xs font-bold text-faint">جاري التحميل… {Math.round(whisper.progress)}%</p>
               </div>
             )}
             {whisper.status === 'error' && (
               <div>
-                <p className="text-red-600">
+                <p className="rounded-xl border border-danger/40 bg-danger-soft px-4 py-3 text-sm font-bold text-danger">
                   تعذّر تحميل النموذج ({whisper.error ?? 'خطأ غير معروف'}). قد يكون بسبب الاتصال بالإنترنت.
                 </p>
-                <button
-                  onClick={whisper.load}
-                  className="mt-2 rounded-full bg-brand-600 px-5 py-2 font-bold text-white shadow transition hover:bg-brand-700"
-                >
+                <button onClick={whisper.load} className="btn-accent mt-3">
                   إعادة المحاولة
                 </button>
               </div>
@@ -592,94 +575,86 @@ export function PracticePage() {
 
         {whisper.status === 'ready' && (
           <div className="space-y-4">
-            <div className="flex items-center gap-3">
+            <div className="flex flex-wrap items-center gap-4">
               {!recording ? (
-                <button
-                  onClick={startRecording}
-                  disabled={busy}
-                  className="flex items-center gap-2 rounded-full bg-red-600 px-6 py-2.5 font-bold text-white shadow transition hover:bg-red-700 disabled:opacity-50"
-                >
+                <button onClick={startRecording} disabled={busy} className="btn-danger disabled:opacity-50">
                   <PracticeIcon className="h-5 w-5" />
                   ابدأ التسجيل
                 </button>
               ) : (
-                <button
-                  onClick={stopRecording}
-                  className="flex items-center gap-2 rounded-full bg-emerald-600 px-6 py-2.5 font-bold text-white shadow transition hover:bg-emerald-700"
-                >
-                  <span className="relative flex h-2.5 w-2.5">
-                    <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-white/70" />
-                    <span className="relative inline-flex h-2.5 w-2.5 rounded-full bg-white" />
+                <button onClick={stopRecording} className="btn-accent">
+                  <span className="relative flex h-2.5 w-2.5" aria-hidden>
+                    <span className="absolute inline-flex h-full w-full animate-ping rounded-full opacity-70" style={{ backgroundColor: 'currentColor' }} />
+                    <span className="relative inline-flex h-2.5 w-2.5 rounded-full" style={{ backgroundColor: 'currentColor' }} />
                   </span>
                   <StopIcon className="h-5 w-5" />
                   إيقاف وتحليل
                 </button>
               )}
-              {busy && <span className="text-sm text-emerald-900/60 dark:text-brand-100/60">جارٍ تحليل التلاوة…</span>}
+              {busy && (
+                <span className="flex items-center gap-2 text-sm font-semibold text-muted">
+                  <span className="h-4 w-4 animate-spin rounded-full border-2 border-gold border-t-transparent" aria-hidden />
+                  جارٍ تحليل التلاوة…
+                </span>
+              )}
             </div>
-            {micError && <p className="text-sm text-red-600">{micError}</p>}
+            {micError && <p className="rounded-xl border border-danger/40 bg-danger-soft px-4 py-3 text-sm font-bold text-danger">{micError}</p>}
           </div>
         )}
       </div>
 
       {wordVerdicts && score && (
-        <div className="space-y-5 rounded-2xl border border-brand-200/70 bg-white/70 p-5 dark:border-brand-900/50 dark:bg-white/5">
+        <div className="card-lux space-y-6 p-6">
           <div className="flex flex-wrap items-center gap-4">
-            <div className="text-3xl font-black text-brand-700 dark:text-brand-300">{score.accuracy}%</div>
-            <div className="text-sm text-emerald-900/70 dark:text-brand-100/70">
+            <div className="text-gilded font-display text-4xl font-bold">{score.accuracy}%</div>
+            <div className="text-sm font-semibold text-muted">
               {score.correct} صحيحة من {score.total}
             </div>
             {!isFinal && (
-              <span className="rounded-full bg-brand-100 px-2 py-0.5 text-xs font-bold text-brand-700 dark:bg-brand-900/40 dark:text-brand-200">
+              <span className="rounded-full border border-gold/40 bg-accent-soft px-3 py-1 text-xs font-bold text-accent">
                 نتيجة مؤقتة أثناء القراءة
               </span>
             )}
             {!wordConfidences && (
-              <span className="rounded-full bg-amber-100 px-2 py-0.5 text-xs font-bold text-amber-800 dark:bg-amber-900/40 dark:text-amber-200">
-                وضع احتياطي: مطابقة نصية فقط
-              </span>
+              <span className="rounded-full bg-warn-soft px-3 py-1 text-xs font-bold text-warn">وضع احتياطي: مطابقة نصية فقط</span>
             )}
           </div>
 
-          <div className="flex flex-wrap gap-4 text-xs text-emerald-900/60 dark:text-brand-100/60">
-            <span>
-              <span className="ml-1 inline-block h-3 w-3 rounded bg-brand-100 dark:bg-brand-900/40" /> صحيحة (لون التجويد إن وُجد)
+          <div className="flex flex-wrap gap-4 rounded-xl border border-line-soft bg-bg/40 p-3 text-xs font-semibold text-muted">
+            <span className="flex items-center gap-1.5">
+              <span className="inline-block h-3 w-3 rounded bg-accent-soft ring-1 ring-accent/40" /> صحيحة (لون التجويد إن وُجد)
             </span>
-            <span>
-              <span className="ml-1 inline-block h-3 w-3 rounded bg-amber-100 dark:bg-amber-900/30" /> مدّ أقصر من المطلوب
+            <span className="flex items-center gap-1.5">
+              <span className="inline-block h-3 w-3 rounded bg-warn-soft ring-1 ring-warn/40" /> مدّ أقصر من المطلوب
             </span>
-            <span>
-              <span className="ml-1 inline-block h-3 w-3 rounded bg-orange-100 dark:bg-orange-900/30" /> مدّ لم يُمدّ إطلاقًا
+            <span className="flex items-center gap-1.5">
+              <span className="inline-block h-3 w-3 rounded bg-severe-soft ring-1 ring-severe/40" /> مدّ لم يُمدّ إطلاقًا
             </span>
-            <span>
-              <span className="ml-1 inline-block h-3 w-3 rounded bg-red-100 dark:bg-red-900/30" /> خاطئة / ناقصة
+            <span className="flex items-center gap-1.5">
+              <span className="inline-block h-3 w-3 rounded bg-danger-soft ring-1 ring-danger/40" /> خاطئة / ناقصة
             </span>
-            <span>
-              <span className="ml-1 inline-block h-3 w-3 rounded bg-sky-100 dark:bg-sky-900/30" /> زائدة
+            <span className="flex items-center gap-1.5">
+              <span className="inline-block h-3 w-3 rounded bg-info-soft ring-1 ring-info/40" /> زائدة
             </span>
           </div>
 
           {hypothesis && (
             <div>
-              <h3 className="mb-1 text-sm font-bold text-brand-700 dark:text-brand-300">ما تعرّف عليه النموذج (توضيحي فقط)</h3>
-              <p className="font-quran text-lg text-emerald-900/80 dark:text-brand-100/80">{hypothesis}</p>
+              <h3 className="title-ornament mb-2 font-display text-base font-bold text-accent">ما تعرّف عليه النموذج (توضيحي فقط)</h3>
+              <p className="font-quran text-lg leading-loose text-muted">{hypothesis}</p>
             </div>
           )}
 
           {acousticAlerts.length > 0 && (
             <div>
-              <h3 className="mb-2 text-sm font-bold text-amber-700 dark:text-amber-300">
-                ⏱️ تنبيهات صوتية تجريبية (طول المدّ)
-              </h3>
-              <ul className="space-y-2">
+              <h3 className="mb-3 font-display text-base font-bold text-severe">⏱️ تنبيهات صوتية تجريبية (طول المدّ)</h3>
+              <ul className="space-y-2.5">
                 {acousticAlerts.map((a) => (
                   <li
                     key={`${a.refIndex}-${a.rule}`}
                     className={clsx(
-                      'rounded-lg p-3 text-sm',
-                      a.severity === 'severe'
-                        ? 'bg-orange-50 text-orange-900 dark:bg-orange-900/20 dark:text-orange-100'
-                        : 'bg-amber-50 text-amber-900 dark:bg-amber-900/20 dark:text-amber-100',
+                      'rounded-xl border p-3.5 text-sm leading-relaxed',
+                      a.severity === 'severe' ? 'border-severe/40 bg-severe-soft text-severe' : 'border-warn/40 bg-warn-soft text-warn',
                     )}
                   >
                     {a.severity === 'severe' ? (
@@ -701,13 +676,13 @@ export function PracticePage() {
 
           {tips.length > 0 && (
             <div>
-              <h3 className="mb-2 text-sm font-bold text-brand-700 dark:text-brand-300">نصائح تجويدية للمواضع التي تحتاج انتباهًا</h3>
-              <ul className="space-y-2">
+              <h3 className="title-ornament mb-3 font-display text-base font-bold text-accent">نصائح تجويدية للمواضع التي تحتاج انتباهًا</h3>
+              <ul className="space-y-2.5">
                 {tips.map((rule) => (
-                  <li key={rule.id} className="flex items-start gap-2 rounded-lg bg-brand-50 p-3 text-sm dark:bg-brand-900/20">
-                    <span className="tajweed-legend-dot mt-1.5" style={{ backgroundColor: rule.color }} />
-                    <span>
-                      <span className="font-bold">{rule.nameAr}: </span>
+                  <li key={rule.id} className="flex items-start gap-3 rounded-xl border border-line-soft bg-accent-soft/50 p-3.5 text-sm leading-relaxed">
+                    <span className="tajweed-legend-dot mt-1.5 shrink-0" style={{ backgroundColor: rule.color, color: rule.color }} />
+                    <span className="text-muted">
+                      <span className="font-display font-bold text-ink">{rule.nameAr}: </span>
                       {rule.description}
                     </span>
                   </li>

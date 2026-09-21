@@ -38,9 +38,9 @@ export function LessonDetailPage() {
 
   if (!rule) {
     return (
-      <div>
-        <p>لم يتم العثور على هذا الحكم.</p>
-        <Link to="/lessons" className="text-brand-700 underline">
+      <div className="card-lux p-8 text-center">
+        <p className="text-ink">لم يتم العثور على هذا الحكم.</p>
+        <Link to="/lessons" className="mt-3 inline-block font-bold text-accent underline decoration-gold underline-offset-4">
           العودة إلى الدروس
         </Link>
       </div>
@@ -49,38 +49,53 @@ export function LessonDetailPage() {
 
   return (
     <div className="mx-auto max-w-3xl space-y-8">
-      <Link to="/lessons" className="text-sm text-brand-700 hover:underline dark:text-brand-300">
-        ← جميع الأحكام
+      <Link
+        to="/lessons"
+        className="inline-flex items-center gap-1.5 text-sm font-bold text-accent transition hover:text-gold"
+      >
+        <span aria-hidden>→</span> جميع الأحكام
       </Link>
 
-      <header className="rounded-2xl border border-brand-200/70 bg-white/70 p-6 dark:border-brand-900/50 dark:bg-white/5">
-        <div className="flex items-center gap-3">
-          <span className="tajweed-legend-dot h-4 w-4" style={{ backgroundColor: rule.color }} />
-          <h1 className="text-2xl font-black text-emerald-900 dark:text-brand-50">{rule.nameAr}</h1>
-          <span className="text-sm text-emerald-900/50 dark:text-brand-100/50">{rule.nameEn}</span>
+      <header className="card-lux pattern-panel relative overflow-hidden p-7">
+        <div className="relative">
+          <div className="flex flex-wrap items-center gap-3">
+            <span
+              aria-hidden
+              className="flex h-11 w-11 items-center justify-center rounded-2xl ring-1 ring-inset ring-black/10"
+              style={{ backgroundColor: rule.color, boxShadow: `0 0 22px color-mix(in srgb, ${rule.color} 40%, transparent)` }}
+            />
+            <div>
+              <h1 className="font-display text-3xl font-bold text-ink">{rule.nameAr}</h1>
+              <span className="text-xs font-medium tracking-wide text-faint">{rule.nameEn}</span>
+            </div>
+            {rule.durationAr && (
+              <span className="mr-auto rounded-full border border-gold/50 bg-surface/70 px-3 py-1 text-xs font-bold text-gold">
+                المقدار: {rule.durationAr}
+              </span>
+            )}
+          </div>
+          {rule.letters && (
+            <div className="mt-5 rounded-xl border border-line-soft bg-bg/40 px-4 py-3 text-center">
+              <span className="mr-2 text-xs font-bold text-faint">حروفه:</span>
+              <span className="font-quran text-2xl" style={{ color: rule.color }}>
+                {rule.letters}
+              </span>
+            </div>
+          )}
+          <p className="mt-5 text-[15px] leading-loose text-muted">{rule.description}</p>
         </div>
-        {rule.letters && (
-          <p className="mt-3 font-quran text-2xl" style={{ color: rule.color }}>
-            {rule.letters}
-          </p>
-        )}
-        <p className="mt-3 leading-loose text-emerald-900/80 dark:text-brand-100/80">{rule.description}</p>
       </header>
 
       <section>
-        <h2 className="mb-3 text-lg font-bold text-brand-700 dark:text-brand-300">أمثلة من القرآن الكريم</h2>
-        {loading && <p className="text-sm text-emerald-900/60 dark:text-brand-100/60">جاري تحميل الأمثلة…</p>}
-        {!loading && examples.length === 0 && (
-          <p className="text-sm text-emerald-900/60 dark:text-brand-100/60">تعذّر تحميل أمثلة حيّة حاليًا.</p>
-        )}
-        <ul className="space-y-3">
+        <h2 className="title-ornament mb-4 font-display text-xl font-bold text-accent">أمثلة من القرآن الكريم</h2>
+        {loading && <p className="text-sm text-faint">جاري تحميل الأمثلة…</p>}
+        {!loading && examples.length === 0 && <p className="text-sm text-faint">تعذّر تحميل أمثلة حيّة حاليًا.</p>}
+        <ul className="space-y-4">
           {examples.map((ayah) => (
-            <li
-              key={ayah.number}
-              className="rounded-xl border border-brand-200/60 bg-white/60 p-4 dark:border-brand-900/40 dark:bg-white/5"
-            >
+            <li key={ayah.number} className="ayah-frame p-5">
               <TajweedText segments={ayah.segments} className="font-quran text-2xl" />
-              <p className="mt-2 text-xs text-emerald-900/50 dark:text-brand-100/50">
+              <div className="hair-gold my-3 max-w-40" />
+              <p className="text-xs font-medium text-faint">
                 سورة {ayah.surah} — الآية {ayah.numberInSurah}
               </p>
             </li>
@@ -88,12 +103,20 @@ export function LessonDetailPage() {
         </ul>
       </section>
 
-      <section className="rounded-2xl border border-gold-400/50 bg-gold-400/10 p-6">
-        <h2 className="mb-3 text-lg font-bold text-emerald-900 dark:text-brand-50">اختبر نفسك</h2>
-        <p className="mb-4 text-sm text-emerald-900/80 dark:text-brand-100/80">
-          ما اسم الحكم الذي يوضحه اللون <span style={{ color: rule.color }} className="font-bold">●</span> في الأمثلة أعلاه؟
+      <section className="card-lux relative overflow-hidden p-7" style={{ borderColor: 'color-mix(in srgb, var(--c-gold) 50%, var(--c-line))' }}>
+        <span
+          aria-hidden
+          className="absolute -left-10 -top-10 flex h-32 w-32 items-center justify-center rounded-full text-[90px] leading-none opacity-10"
+          style={{ color: 'var(--c-gold)', fontFamily: 'var(--font-display)' }}
+        >
+          ؟
+        </span>
+        <h2 className="font-display text-xl font-bold text-ink">اختبر نفسك</h2>
+        <p className="mb-5 mt-2 text-sm leading-relaxed text-muted">
+          ما اسم الحكم الذي يوضحه اللون <span style={{ color: rule.color }} className="font-bold">●</span> في الأمثلة
+          أعلاه؟
         </p>
-        <div className="grid gap-2 sm:grid-cols-2">
+        <div className="grid gap-2.5 sm:grid-cols-2">
           {choices.map((c) => {
             const isCorrect = c.id === rule.id
             const isSelected = selected === c.id
@@ -104,12 +127,12 @@ export function LessonDetailPage() {
                   setSelected(c.id)
                   if (isCorrect) markComplete(rule.id)
                 }}
-                className={`rounded-lg border px-4 py-2 text-right text-sm font-medium transition ${
+                className={`rounded-xl border px-4 py-2.5 text-right text-sm font-bold transition-all duration-200 ${
                   isSelected
                     ? isCorrect
-                      ? 'border-brand-600 bg-brand-100 text-brand-800'
-                      : 'border-red-400 bg-red-50 text-red-700'
-                    : 'border-brand-200 bg-white hover:bg-brand-50 dark:border-brand-900 dark:bg-white/5 dark:hover:bg-white/10'
+                      ? 'border-accent bg-accent-soft text-accent shadow-sm'
+                      : 'border-danger bg-danger-soft text-danger'
+                    : 'border-line bg-elevated/60 text-ink hover:-translate-y-0.5 hover:border-gold/60 hover:shadow-sm'
                 }`}
               >
                 {c.nameAr}
@@ -118,11 +141,11 @@ export function LessonDetailPage() {
           })}
         </div>
         {selected && (
-          <p className={`mt-3 text-sm font-bold ${selected === rule.id ? 'text-brand-700' : 'text-red-600'}`}>
+          <p className={`mt-4 text-sm font-black ${selected === rule.id ? 'text-accent' : 'text-danger'}`}>
             {selected === rule.id ? '✓ إجابة صحيحة! تم تسجيل هذا الدرس كمكتمل.' : 'إجابة غير صحيحة، حاول مجددًا.'}
           </p>
         )}
-        {isComplete && !selected && <p className="mt-3 text-sm font-bold text-brand-700">✓ أكملت هذا الدرس سابقًا.</p>}
+        {isComplete && !selected && <p className="mt-4 text-sm font-black text-accent">✓ أكملت هذا الدرس سابقًا.</p>}
       </section>
     </div>
   )

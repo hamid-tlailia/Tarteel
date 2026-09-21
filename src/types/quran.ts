@@ -12,6 +12,8 @@ export type TajweedRuleId =
   | 'idgham_shafawi'
   | 'idgham_ghunnah'
   | 'idgham_wo_ghunnah'
+  | 'idgham_mutajanisayn'
+  | 'idgham_mutaqaribayn'
   | 'iqlab'
   | 'ghunnah'
 
