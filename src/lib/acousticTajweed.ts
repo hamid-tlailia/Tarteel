@@ -16,11 +16,14 @@ import type { TimedChunk } from '../asr/whisper.worker'
  * typically from forced-decoding confidence — see whisper.worker.ts).
  */
 
+// Relative-duration floors follow each rule's actual ḥarākāt length as marked by the
+// quran-tajweed edition: `n`/`p` = natural madd (2), `o` = wājib muttaṣil/munfaṣil (4–5),
+// `m` = lāzim (6).
 const MADD_MIN_RELATIVE_DURATION: Partial<Record<TajweedRuleId, number>> = {
   madda_normal: 1.15,
-  madda_permissible: 1.35,
-  madda_necessary: 1.5,
-  madda_obligatory: 1.8,
+  madda_permissible: 1.25,
+  madda_obligatory: 1.5,
+  madda_necessary: 1.8,
 }
 
 export interface AcousticAlert {

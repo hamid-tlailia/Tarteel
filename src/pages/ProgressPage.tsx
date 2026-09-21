@@ -1,12 +1,32 @@
+import { useMemo } from 'react'
 import { CartesianGrid, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts'
 import { useProgressStore } from '../store/progressStore'
+import { useThemeStore } from '../store/themeStore'
 import { TAJWEED_RULES } from '../lib/tajweed'
 import { Link } from 'react-router-dom'
+import clsx from 'clsx'
+
+/** Resolves a themed CSS variable to a concrete color so recharts (SVG attributes) can use it;
+ * re-runs whenever the active theme changes. */
+function useThemeColor(varName: string, fallback: string) {
+  const theme = useThemeStore((s) => s.theme)
+  return useMemo(() => {
+    if (typeof window === 'undefined') return fallback
+    const value = getComputedStyle(document.documentElement).getPropertyValue(varName).trim()
+    return value || fallback
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [theme, varName, fallback])
+}
 
 export function ProgressPage() {
   const attempts = useProgressStore((s) => s.attempts)
   const completedLessons = useProgressStore((s) => s.completedLessons)
   const streak = useProgressStore((s) => s.streakDays())
+
+  const lineColor = useThemeColor('--c-gold', '#ab8734')
+  const gridColor = useThemeColor('--c-line', '#e3d9c2')
+  const tickColor = useThemeColor('--c-faint', '#8b9688')
+  const surfaceColor = useThemeColor('--c-elevated', '#ffffff')
 
   const chartData = attempts.slice(-30).map((a, i) => ({
     name: `#${i + 1}`,
@@ -19,8 +39,11 @@ export function ProgressPage() {
     : 0
 
   return (
-    <div className="space-y-8">
-      <h1 className="text-2xl font-black text-emerald-900 dark:text-brand-50">تقدّمي</h1>
+    <div className="space-y-9">
+      <div>
+        <h1 className="text-gilded font-display text-3xl font-bold">تقدّمي</h1>
+        <div className="hair-gold mt-4 max-w-sm" />
+      </div>
 
       <div className="grid gap-4 sm:grid-cols-3">
         <StatCard label="محاولات التلاوة" value={attempts.length} />
@@ -28,12 +51,12 @@ export function ProgressPage() {
         <StatCard label="أيام متتالية" value={streak} />
       </div>
 
-      <section className="rounded-2xl border border-brand-200/70 bg-white/70 p-5 dark:border-brand-900/50 dark:bg-white/5">
-        <h2 className="mb-4 text-lg font-bold text-brand-700 dark:text-brand-300">تطور دقة التلاوة</h2>
+      <section className="card-lux p-6">
+        <h2 className="title-ornament mb-5 font-display text-xl font-bold text-accent">تطور دقة التلاوة</h2>
         {attempts.length === 0 ? (
-          <p className="text-sm text-emerald-900/60 dark:text-brand-100/60">
+          <p className="text-sm text-muted">
             لا توجد محاولات بعد.{' '}
-            <Link to="/practice" className="text-brand-700 underline dark:text-brand-300">
+            <Link to="/practice" className="font-bold text-accent underline decoration-gold underline-offset-4 hover:text-gold">
               ابدأ أول تلاوة
             </Link>
             .
@@ -42,22 +65,30 @@ export function ProgressPage() {
           <div className="h-64" dir="ltr">
             <ResponsiveContainer width="100%" height="100%">
               <LineChart data={chartData}>
-                <CartesianGrid strokeDasharray="3 3" stroke="#d1fae5" />
-                <XAxis dataKey="name" tick={{ fontSize: 12 }} />
-                <YAxis domain={[0, 100]} tick={{ fontSize: 12 }} />
+                <CartesianGrid strokeDasharray="3 3" stroke={gridColor} />
+                <XAxis dataKey="name" tick={{ fontSize: 12, fill: tickColor }} stroke={gridColor} />
+                <YAxis domain={[0, 100]} tick={{ fontSize: 12, fill: tickColor }} stroke={gridColor} />
                 <Tooltip
                   formatter={(value) => [`${value}%`, 'الدقة']}
                   labelFormatter={(_, payload) => payload?.[0]?.payload?.date ?? ''}
+                  contentStyle={{
+                    backgroundColor: surfaceColor,
+                    border: `1px solid ${gridColor}`,
+                    borderRadius: '0.75rem',
+                    color: tickColor,
+                    fontFamily: 'Tajawal, sans-serif',
+                    fontSize: '0.8rem',
+                  }}
                 />
-                <Line type="monotone" dataKey="دقة" stroke="#059669" strokeWidth={2} dot={{ r: 3 }} />
+                <Line type="monotone" dataKey="دقة" stroke={lineColor} strokeWidth={2.5} dot={{ r: 3, fill: lineColor, strokeWidth: 0 }} activeDot={{ r: 5 }} />
               </LineChart>
             </ResponsiveContainer>
           </div>
         )}
       </section>
 
-      <section className="rounded-2xl border border-brand-200/70 bg-white/70 p-5 dark:border-brand-900/50 dark:bg-white/5">
-        <h2 className="mb-4 text-lg font-bold text-brand-700 dark:text-brand-300">
+      <section className="card-lux p-6">
+        <h2 className="title-ornament mb-5 font-display text-xl font-bold text-accent">
           الدروس المكتملة ({completedLessons.length}/{TAJWEED_RULES.length})
         </h2>
         <div className="flex flex-wrap gap-2">
@@ -67,13 +98,14 @@ export function ProgressPage() {
               <Link
                 key={rule.id}
                 to={`/lessons/${rule.id}`}
-                className={`rounded-full border px-3 py-1 text-xs font-medium transition ${
+                className={clsx(
+                  'flex items-center gap-1.5 rounded-full border px-3.5 py-1.5 text-xs font-bold transition hover:-translate-y-0.5',
                   done
-                    ? 'border-brand-500 bg-brand-100 text-brand-800 dark:bg-brand-900/40 dark:text-brand-100'
-                    : 'border-brand-200 text-emerald-900/50 hover:bg-brand-50 dark:border-brand-800 dark:text-brand-100/50'
-                }`}
+                    ? 'border-gold/60 bg-accent-soft text-accent shadow-sm'
+                    : 'border-line bg-elevated/50 text-faint hover:border-gold/40 hover:text-muted',
+                )}
               >
-                {done && '✓ '}
+                {done && <span className="text-gold">✦</span>}
                 {rule.nameAr}
               </Link>
             )
@@ -82,18 +114,25 @@ export function ProgressPage() {
       </section>
 
       {attempts.length > 0 && (
-        <section className="rounded-2xl border border-brand-200/70 bg-white/70 p-5 dark:border-brand-900/50 dark:bg-white/5">
-          <h2 className="mb-4 text-lg font-bold text-brand-700 dark:text-brand-300">آخر المحاولات</h2>
-          <ul className="divide-y divide-brand-100 dark:divide-brand-900/40">
+        <section className="card-lux p-6">
+          <h2 className="title-ornament mb-5 font-display text-xl font-bold text-accent">آخر المحاولات</h2>
+          <ul className="divide-y divide-line">
             {[...attempts]
               .slice(-10)
               .reverse()
               .map((a) => (
-                <li key={a.id} className="flex items-center justify-between py-2 text-sm">
-                  <span>
-                    {a.surahName} ({a.ayahFrom}-{a.ayahTo})
+                <li key={a.id} className="flex items-center justify-between gap-3 py-3 text-sm">
+                  <span className="font-medium text-muted">
+                    <span className="font-display font-bold text-ink">{a.surahName}</span> ({a.ayahFrom}-{a.ayahTo})
                   </span>
-                  <span className="font-bold text-brand-700 dark:text-brand-300">{a.accuracy}%</span>
+                  <span
+                    className={clsx(
+                      'rounded-full px-3 py-1 text-xs font-black',
+                      a.accuracy >= 80 ? 'bg-accent-soft text-accent' : a.accuracy >= 50 ? 'bg-warn-soft text-warn' : 'bg-danger-soft text-danger',
+                    )}
+                  >
+                    {a.accuracy}%
+                  </span>
                 </li>
               ))}
           </ul>
@@ -105,9 +144,10 @@ export function ProgressPage() {
 
 function StatCard({ label, value }: { label: string; value: string | number }) {
   return (
-    <div className="rounded-2xl border border-brand-200/70 bg-white/70 p-5 text-center dark:border-brand-900/50 dark:bg-white/5">
-      <div className="text-3xl font-black text-brand-700 dark:text-brand-300">{value}</div>
-      <div className="mt-1 text-sm text-emerald-900/60 dark:text-brand-100/60">{label}</div>
+    <div className="card-lux card-hover relative overflow-hidden p-6 text-center">
+      <span aria-hidden className="absolute inset-x-8 top-0 h-px bg-gradient-to-l from-transparent via-gold/70 to-transparent" />
+      <div className="text-gilded font-display text-4xl font-bold">{value}</div>
+      <div className="mt-1.5 text-sm font-semibold text-muted">{label}</div>
     </div>
   )
 }

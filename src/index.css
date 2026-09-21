@@ -1,39 +1,236 @@
 @import "tailwindcss";
 
-@theme {
+/*
+ * ورتل — luxury multi-theme design system.
+ * Every color utility resolves through the --c-* tokens below, so switching
+ * `data-theme` on <html> repaints the whole app instantly (4 hand-tuned themes:
+ * Ivory Gold, Emerald Night, Mushaf Parchment, Royal Midnight).
+ */
+
+@theme inline {
   --font-quran: "Amiri Quran", "Amiri", serif;
+  --font-display: "Aref Ruqaa", "Amiri", serif;
   --font-sans: "Tajawal", ui-sans-serif, system-ui, sans-serif;
 
-  --color-emerald-950: #062e22;
-  --color-brand-50: #ecfdf5;
-  --color-brand-100: #d1fae5;
-  --color-brand-200: #a7f3d0;
-  --color-brand-300: #6ee7b7;
-  --color-brand-400: #34d399;
-  --color-brand-500: #10b981;
-  --color-brand-600: #059669;
-  --color-brand-700: #047857;
-  --color-brand-800: #065f46;
-  --color-brand-900: #064e3b;
-  --color-gold-400: #d4af37;
-  --color-gold-500: #c19a2e;
+  --color-bg: var(--c-bg);
+  --color-bg-deep: var(--c-bg-deep);
+  --color-surface: var(--c-surface);
+  --color-elevated: var(--c-elevated);
+  --color-line: var(--c-line);
+  --color-line-soft: var(--c-line-soft);
+  --color-ink: var(--c-ink);
+  --color-muted: var(--c-muted);
+  --color-faint: var(--c-faint);
+  --color-accent: var(--c-accent);
+  --color-accent-hover: var(--c-accent-hover);
+  --color-accent-soft: var(--c-accent-soft);
+  --color-accent-ink: var(--c-accent-ink);
+  --color-gold: var(--c-gold);
+  --color-gold-soft: var(--c-gold-soft);
+  --color-gold-deep: var(--c-gold-deep);
+  --color-danger: var(--c-danger);
+  --color-danger-soft: var(--c-danger-soft);
+  --color-warn: var(--c-warn);
+  --color-warn-soft: var(--c-warn-soft);
+  --color-severe: var(--c-severe);
+  --color-severe-soft: var(--c-severe-soft);
+  --color-ok: var(--c-ok);
+  --color-info: var(--c-info);
+  --color-info-soft: var(--c-info-soft);
+  --color-qalqalah: var(--c-qalqalah);
+  --color-qalqalah-soft: var(--c-qalqalah-soft);
+}
 
-  /* Tajweed rule colors — aligned with the common Madinah Mushaf tajweed palette */
-  --tw-ham_wasl: #9aa0a6;
-  --tw-laam_shamsiyah: #9aa0a6;
-  --tw-slnt: #9aa0a6;
-  --tw-madda_normal: #ff7e1e;
-  --tw-madda_permissible: #9400a8;
-  --tw-madda_necessary: #ff0000;
-  --tw-madda_obligatory: #aa0060;
-  --tw-qalqalah: #dd0008;
-  --tw-ikhafa: #9400a8;
-  --tw-ikhafa_shafawi: #d500b7;
-  --tw-idgham_shafawi: #58b800;
-  --tw-idgham_ghunnah: #58b800;
-  --tw-idgham_wo_ghunnah: #58b800;
-  --tw-iqlab: #26bffd;
-  --tw-ghunnah: #ff7e1e;
+/* ─────────────────────────── Theme 1: العاجي الذهبي (Ivory Gold) ─────────────────────────── */
+:root,
+[data-theme="ivory"] {
+  --c-bg: #f7f2e8;
+  --c-bg-deep: #efe7d5;
+  --c-surface: #fffdf7;
+  --c-elevated: #ffffff;
+  --c-line: #e3d9c2;
+  --c-line-soft: #ece3cf;
+  --c-ink: #22301f;
+  --c-muted: #5d6b5c;
+  --c-faint: #8b9688;
+  --c-accent: #0e7a56;
+  --c-accent-hover: #0b6346;
+  --c-accent-soft: #dcefe5;
+  --c-accent-ink: #ffffff;
+  --c-gold: #ab8734;
+  --c-gold-soft: #e6d5a8;
+  --c-gold-deep: #86681f;
+  --c-danger: #b4362f;
+  --c-danger-soft: #f7e3df;
+  --c-warn: #9a6b0f;
+  --c-warn-soft: #f6ebd3;
+  --c-severe: #c2571a;
+  --c-severe-soft: #f8e5d5;
+  --c-ok: #2e7d4f;
+  --c-info: #3a6ea5;
+  --c-info-soft: #e0eaf4;
+  --c-qalqalah: #7c3aed;
+  --c-qalqalah-soft: #efe4fb;
+  --shadow-lux: 0 1px 2px rgba(60, 45, 20, 0.05), 0 10px 30px -12px rgba(60, 45, 20, 0.18);
+  --shadow-lift: 0 2px 4px rgba(60, 45, 20, 0.06), 0 18px 40px -14px rgba(60, 45, 20, 0.28);
+  --glass: rgba(250, 246, 236, 0.82);
+  --pattern-opacity: 0.05;
+  color-scheme: light;
+}
+
+/* ─────────────────────────── Theme 2: ليل الزمرد (Emerald Night) ─────────────────────────── */
+[data-theme="night"] {
+  --c-bg: #06110d;
+  --c-bg-deep: #030a07;
+  --c-surface: #0b1a13;
+  --c-elevated: #10241b;
+  --c-line: #1e3a2c;
+  --c-line-soft: #162b21;
+  --c-ink: #e9f2ec;
+  --c-muted: #a2b7a9;
+  --c-faint: #6c8274;
+  --c-accent: #3ddba2;
+  --c-accent-hover: #57e6b3;
+  --c-accent-soft: #0f3226;
+  --c-accent-ink: #04150e;
+  --c-gold: #d9b96a;
+  --c-gold-soft: #f0dca8;
+  --c-gold-deep: #b8964a;
+  --c-danger: #f07068;
+  --c-danger-soft: #3a1a17;
+  --c-warn: #e5b567;
+  --c-warn-soft: #33260f;
+  --c-severe: #ffa06a;
+  --c-severe-soft: #3d2213;
+  --c-ok: #58d68a;
+  --c-info: #6fa8dc;
+  --c-info-soft: #14253a;
+  --c-qalqalah: #c99bf5;
+  --c-qalqalah-soft: #2a1a3d;
+  --shadow-lux: 0 1px 2px rgba(0, 0, 0, 0.4), 0 12px 34px -12px rgba(0, 0, 0, 0.65);
+  --shadow-lift: 0 2px 6px rgba(0, 0, 0, 0.5), 0 22px 48px -16px rgba(0, 0, 0, 0.8);
+  --glass: rgba(6, 17, 13, 0.8);
+  --pattern-opacity: 0.07;
+  color-scheme: dark;
+}
+
+/* ─────────────────────────── Theme 3: ورق المصحف (Mushaf Parchment) ─────────────────────────── */
+[data-theme="mushaf"] {
+  --c-bg: #f2e7cd;
+  --c-bg-deep: #e9dbb8;
+  --c-surface: #f9f1dd;
+  --c-elevated: #fdf7e8;
+  --c-line: #dcc79b;
+  --c-line-soft: #e6d6b2;
+  --c-ink: #3b2f1e;
+  --c-muted: #6f5d42;
+  --c-faint: #98865f;
+  --c-accent: #7c5a28;
+  --c-accent-hover: #67491e;
+  --c-accent-soft: #efdfbe;
+  --c-accent-ink: #fdf7e8;
+  --c-gold: #9a742f;
+  --c-gold-soft: #e0c68c;
+  --c-gold-deep: #75561e;
+  --c-danger: #a63d2f;
+  --c-danger-soft: #f1ddcf;
+  --c-warn: #8f6510;
+  --c-warn-soft: #f0e2c2;
+  --c-severe: #b45a1c;
+  --c-severe-soft: #f3e0cd;
+  --c-ok: #55703c;
+  --c-info: #4a6478;
+  --c-info-soft: #e2e5df;
+  --c-qalqalah: #6b4a8f;
+  --c-qalqalah-soft: #e6dcef;
+  --shadow-lux: 0 1px 2px rgba(90, 65, 25, 0.07), 0 10px 30px -12px rgba(90, 65, 25, 0.22);
+  --shadow-lift: 0 2px 4px rgba(90, 65, 25, 0.08), 0 18px 40px -14px rgba(90, 65, 25, 0.3);
+  --glass: rgba(244, 233, 209, 0.85);
+  --pattern-opacity: 0.07;
+  color-scheme: light;
+}
+
+/* ─────────────────────────── Theme 4: الليل الملكي (Royal Midnight) ─────────────────────────── */
+[data-theme="royal"] {
+  --c-bg: #070c1c;
+  --c-bg-deep: #04070f;
+  --c-surface: #0d1428;
+  --c-elevated: #131c36;
+  --c-line: #24304f;
+  --c-line-soft: #1a2340;
+  --c-ink: #e9edfa;
+  --c-muted: #9ca7c9;
+  --c-faint: #6a7599;
+  --c-accent: #8ab0ff;
+  --c-accent-hover: #a3c2ff;
+  --c-accent-soft: #1a2547;
+  --c-accent-ink: #0a1128;
+  --c-gold: #dcc078;
+  --c-gold-soft: #f2e3b3;
+  --c-gold-deep: #b3924a;
+  --c-danger: #ef6a6a;
+  --c-danger-soft: #33191f;
+  --c-warn: #e0b060;
+  --c-warn-soft: #2e2413;
+  --c-severe: #ff9d6b;
+  --c-severe-soft: #33200f;
+  --c-ok: #5ac98d;
+  --c-info: #74a4e0;
+  --c-info-soft: #16233c;
+  --c-qalqalah: #b79bff;
+  --c-qalqalah-soft: #211a3d;
+  --shadow-lux: 0 1px 2px rgba(0, 0, 0, 0.45), 0 12px 34px -12px rgba(0, 0, 0, 0.7);
+  --shadow-lift: 0 2px 6px rgba(0, 0, 0, 0.55), 0 22px 48px -16px rgba(0, 0, 0, 0.85);
+  --glass: rgba(7, 12, 28, 0.8);
+  --pattern-opacity: 0.06;
+  color-scheme: dark;
+}
+
+/*
+ * Tajweed rule colors — the official alquran.cloud palette (as rendered by the source
+ * edition itself), tuned per light/dark environment for contrast on each theme.
+ */
+:root,
+[data-theme="ivory"],
+[data-theme="mushaf"] {
+  --tw-ham_wasl: #8e97a0;
+  --tw-laam_shamsiyah: #8e97a0;
+  --tw-slnt: #8e97a0;
+  --tw-madda_normal: #4e7bf0;
+  --tw-madda_permissible: #3f4fe0;
+  --tw-madda_obligatory: #2144c1;
+  --tw-madda_necessary: #0a17b8;
+  --tw-qalqalah: #d33427;
+  --tw-ikhafa: #9426a8;
+  --tw-ikhafa_shafawi: #c92aae;
+  --tw-idgham_shafawi: #4fa200;
+  --tw-idgham_ghunnah: #179174;
+  --tw-idgham_wo_ghunnah: #2b8f16;
+  --tw-idgham_mutajanisayn: #a1793c;
+  --tw-idgham_mutaqaribayn: #a1793c;
+  --tw-iqlab: #0f9fd8;
+  --tw-ghunnah: #ee7b14;
+}
+
+[data-theme="night"],
+[data-theme="royal"] {
+  --tw-ham_wasl: #9aa3ac;
+  --tw-laam_shamsiyah: #9aa3ac;
+  --tw-slnt: #9aa3ac;
+  --tw-madda_normal: #8fb0ff;
+  --tw-madda_permissible: #7a88ff;
+  --tw-madda_obligatory: #6d82f5;
+  --tw-madda_necessary: #a9b6ff;
+  --tw-qalqalah: #ff6b62;
+  --tw-ikhafa: #d98cec;
+  --tw-ikhafa_shafawi: #f47fd8;
+  --tw-idgham_shafawi: #8edb47;
+  --tw-idgham_ghunnah: #45c9a4;
+  --tw-idgham_wo_ghunnah: #6fd44f;
+  --tw-idgham_mutajanisayn: #c9a468;
+  --tw-idgham_mutaqaribayn: #c9a468;
+  --tw-iqlab: #56d0f5;
+  --tw-ghunnah: #ffa04d;
 }
 
 html,
@@ -44,35 +241,256 @@ body,
 
 body {
   font-family: var(--font-sans);
-  background-color: #f4f1ea;
-  color: #1c2b24;
+  background-color: var(--c-bg);
+  color: var(--c-ink);
+  background-image:
+    radial-gradient(1100px 500px at 85% -10%, color-mix(in srgb, var(--c-gold) 8%, transparent), transparent 60%),
+    radial-gradient(900px 420px at 10% 0%, color-mix(in srgb, var(--c-accent) 7%, transparent), transparent 55%),
+    linear-gradient(180deg, var(--c-bg) 0%, var(--c-bg-deep) 100%);
+  background-attachment: fixed;
+  transition: background-color 0.4s ease, color 0.4s ease;
 }
 
-:root[data-theme="dark"] body {
-  background-color: #0b1512;
-  color: #eef6f1;
+/* Subtle khatam (8-point star) lattice over the whole page — the signature luxury touch. */
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  opacity: var(--pattern-opacity);
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='96' height='96' viewBox='0 0 96 96'%3E%3Cg fill='none' stroke='%23b08d3e' stroke-width='1.1'%3E%3Crect x='28' y='28' width='40' height='40'/%3E%3Crect x='28' y='28' width='40' height='40' transform='rotate(45 48 48)'/%3E%3Ccircle cx='48' cy='48' r='3.2'/%3E%3Cpath d='M0 48h8M88 48h8M48 0v8M48 88v8'/%3E%3C/g%3E%3C/svg%3E");
+  background-size: 96px 96px;
 }
 
 .font-quran {
   font-family: var(--font-quran);
-  line-height: 2.6;
+  line-height: 2.5;
 }
 
+.font-display {
+  font-family: var(--font-display);
+}
+
+/* Gilded headline text */
+.text-gilded {
+  background: linear-gradient(
+    100deg,
+    var(--c-gold-deep) 0%,
+    var(--c-gold) 30%,
+    var(--c-gold-soft) 50%,
+    var(--c-gold) 70%,
+    var(--c-gold-deep) 100%
+  );
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+[data-theme="night"] .text-gilded,
+[data-theme="royal"] .text-gilded {
+  background: linear-gradient(
+    100deg,
+    var(--c-gold-deep) 0%,
+    var(--c-gold) 25%,
+    var(--c-gold-soft) 50%,
+    var(--c-gold) 75%,
+    var(--c-gold-deep) 100%
+  );
+  -webkit-background-clip: text;
+  background-clip: text;
+}
+
+/* Gold hairline divider */
+.hair-gold {
+  height: 1px;
+  border: 0;
+  background: linear-gradient(90deg, transparent, var(--c-gold-soft) 20%, var(--c-gold) 50%, var(--c-gold-soft) 80%, transparent);
+  opacity: 0.7;
+}
+
+/* Luxury card */
+.card-lux {
+  background: color-mix(in srgb, var(--c-surface) 88%, transparent);
+  border: 1px solid var(--c-line);
+  border-radius: 1.25rem;
+  box-shadow: var(--shadow-lux);
+  backdrop-filter: blur(10px);
+  transition:
+    transform 0.25s cubic-bezier(0.22, 1, 0.36, 1),
+    box-shadow 0.25s ease,
+    border-color 0.25s ease;
+}
+
+.card-hover:hover {
+  transform: translateY(-3px);
+  border-color: color-mix(in srgb, var(--c-gold) 55%, var(--c-line));
+  box-shadow: var(--shadow-lift);
+}
+
+/* Mushaf-style double frame for ayah panels */
+.ayah-frame {
+  position: relative;
+  border: 1px solid var(--c-line);
+  border-radius: 1.1rem;
+  background: color-mix(in srgb, var(--c-surface) 92%, transparent);
+}
+
+.ayah-frame::after {
+  content: "";
+  position: absolute;
+  inset: 4px;
+  border: 1px solid color-mix(in srgb, var(--c-gold) 35%, transparent);
+  border-radius: 0.85rem;
+  pointer-events: none;
+}
+
+/* Pattern panel used behind the hero */
+.pattern-panel {
+  position: relative;
+  overflow: hidden;
+}
+
+.pattern-panel::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  opacity: calc(var(--pattern-opacity) * 2.2);
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='96' height='96' viewBox='0 0 96 96'%3E%3Cg fill='none' stroke='%23e6d5a8' stroke-width='1.1'%3E%3Crect x='28' y='28' width='40' height='40'/%3E%3Crect x='28' y='28' width='40' height='40' transform='rotate(45 48 48)'/%3E%3Ccircle cx='48' cy='48' r='3.2'/%3E%3C/g%3E%3C/svg%3E");
+  background-size: 96px 96px;
+  -webkit-mask-image: radial-gradient(80% 120% at 50% 0%, black 30%, transparent 75%);
+  mask-image: radial-gradient(80% 120% at 50% 0%, black 30%, transparent 75%);
+}
+
+/* Buttons */
+.btn-gold {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  border-radius: 9999px;
+  font-weight: 700;
+  padding: 0.65rem 1.6rem;
+  color: #221a05;
+  background: linear-gradient(135deg, var(--c-gold-soft), var(--c-gold) 55%, var(--c-gold-deep));
+  box-shadow: 0 6px 20px -6px color-mix(in srgb, var(--c-gold) 65%, transparent);
+  transition: transform 0.2s ease, box-shadow 0.2s ease, filter 0.2s ease;
+}
+
+.btn-gold:hover {
+  filter: brightness(1.07);
+  transform: translateY(-1px);
+  box-shadow: 0 10px 26px -6px color-mix(in srgb, var(--c-gold) 75%, transparent);
+}
+
+.btn-accent {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  border-radius: 9999px;
+  font-weight: 700;
+  padding: 0.6rem 1.5rem;
+  color: var(--c-accent-ink);
+  background: linear-gradient(135deg, var(--c-accent-hover), var(--c-accent));
+  box-shadow: 0 6px 18px -8px color-mix(in srgb, var(--c-accent) 80%, transparent);
+  transition: transform 0.2s ease, box-shadow 0.2s ease, filter 0.2s ease;
+}
+
+.btn-accent:hover {
+  filter: brightness(1.06);
+  transform: translateY(-1px);
+}
+
+.btn-ghost {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  border-radius: 9999px;
+  font-weight: 700;
+  padding: 0.6rem 1.5rem;
+  color: var(--c-ink);
+  border: 1px solid color-mix(in srgb, var(--c-gold) 45%, var(--c-line));
+  background: color-mix(in srgb, var(--c-surface) 55%, transparent);
+  transition: background-color 0.2s ease, border-color 0.2s ease, transform 0.2s ease;
+}
+
+.btn-ghost:hover {
+  border-color: var(--c-gold);
+  background: color-mix(in srgb, var(--c-gold) 10%, transparent);
+  transform: translateY(-1px);
+}
+
+.btn-danger {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  border-radius: 9999px;
+  font-weight: 700;
+  padding: 0.6rem 1.5rem;
+  color: #fff;
+  background: linear-gradient(135deg, var(--c-danger), color-mix(in srgb, var(--c-danger) 80%, black));
+  box-shadow: 0 6px 18px -8px color-mix(in srgb, var(--c-danger) 85%, transparent);
+  transition: transform 0.2s ease, box-shadow 0.2s ease, filter 0.2s ease;
+}
+
+.btn-danger:hover {
+  filter: brightness(1.08);
+  transform: translateY(-1px);
+}
+
+/* Tajweed legend gem (replaces the flat dot) */
 .tajweed-legend-dot {
   display: inline-block;
-  width: 0.6rem;
-  height: 0.6rem;
+  width: 0.65rem;
+  height: 0.65rem;
   border-radius: 9999px;
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--c-surface) 80%, transparent), 0 0 8px currentColor;
+}
+
+/* Section title with a small gilded rule */
+.title-ornament {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.title-ornament::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: linear-gradient(90deg, color-mix(in srgb, var(--c-gold) 60%, transparent), transparent);
 }
 
 ::selection {
-  background-color: var(--color-brand-300);
-  color: #06281f;
+  background-color: color-mix(in srgb, var(--c-gold) 45%, transparent);
+  color: var(--c-ink);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root:not([data-theme="light"]) body {
-    background-color: #0b1512;
-    color: #eef6f1;
-  }
+:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--c-gold) 80%, transparent);
+  outline-offset: 2px;
+}
+
+/* Slim gilded scrollbars */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--c-gold) 40%, var(--c-line)) transparent;
+}
+
+*::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+*::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, var(--c-gold) 40%, var(--c-line));
+  border-radius: 9999px;
+}
+
+*::-webkit-scrollbar-track {
+  background: transparent;
 }
