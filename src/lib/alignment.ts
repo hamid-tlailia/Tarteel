@@ -9,7 +9,7 @@ export type WordStatus = 'correct' | 'substituted' | 'missing' | 'extra'
  * Skipped for very short words (1 char), where any edit is too large a fraction of the word
  * to be a safe near-miss call.
  */
-function editClose(a: string, b: string): boolean {
+export function editClose(a: string, b: string): boolean {
   if (a === b) return true
   const n = a.length
   const m = b.length

@@ -15,6 +15,15 @@ import {
 } from '../lib/acousticTajweed'
 import { detectQalqalahIssues, type QalqalahAlert } from '../lib/qalqalah'
 import { collapseRepeatedWords } from '../lib/repetition'
+import { scoreTranscriptMatch } from '../lib/transcriptMatch'
+import { buildCoachTips } from '../lib/coach'
+import {
+  bucketByAyah,
+  buildWordVerdicts,
+  PASSAGE_MATCH_FLOOR,
+  type AyahRange,
+  type WordVerdict,
+} from '../lib/verdicts'
 import { LiveTajweedTracker, type LiveSnapshot, type LiveWordResult } from '../lib/liveTracker'
 import { useWhisper } from '../asr/useWhisper'
 import { decodeToPcm16k, MicRecorder, trimSilence } from '../asr/audio'
@@ -26,32 +35,6 @@ const MIN_SPEECH_SAMPLES = 8000 // ~0.5s at 16kHz, after silence trimming
 // in liveTracker.ts. Not user-configurable yet; a reasonable middle ground for a first pass.
 const LIVE_TAU = 0.45
 const LIVE_SNAPSHOT_INTERVAL_MS = 120
-
-// Forced-decoding confidence is a *relative* likelihood, not a calibrated probability — this
-// threshold is a starting guess (lenient on purpose: a false "wrong" is more discouraging
-// than an occasional false "correct") and will likely need tuning against real recitations.
-const CONFIDENCE_THRESHOLD = 0.15
-
-interface AyahRange {
-  ayahNumber: number
-  numberInSurah: number
-  start: number
-  end: number
-}
-
-type WordStatus = 'unreached' | 'correct' | 'wrong'
-
-interface WordVerdict {
-  refIndex: number
-  status: WordStatus
-  /** Forced-decoding confidence (0–1), or null when that pass wasn't available and we
-   * fell back to plain text matching against the free transcription. */
-  confidence: number | null
-  /** What the free decode guessed in this word's place — shown as a hint, not trusted
-   * for the correctness verdict itself. */
-  hypGuess: string | null
-  freeStatus: AlignedWord['status'] | null
-}
 
 function hypWordsFromResult(text: string, chunks: TimedChunk[]) {
   if (chunks.length > 0) {
@@ -66,53 +49,6 @@ function vibrate(pattern: number | number[]) {
   if (typeof navigator !== 'undefined' && typeof navigator.vibrate === 'function') {
     navigator.vibrate(pattern)
   }
-}
-
-/** Buckets a free-decode alignment back into per-ayah slices — used to tell how far the
- * reciter has actually gotten (an ayah with no matched hypothesis word yet hasn't been
- * "reached"), independent of React state so it can be reused from an event handler too. */
-function bucketByAyah(aligned: AlignedWord[], ayahRanges: AyahRange[]): AlignedWord[][] {
-  const buckets: AlignedWord[][] = ayahRanges.map(() => [])
-  if (ayahRanges.length === 0) return buckets
-  let ayahIdx = 0
-  for (const w of aligned) {
-    if (w.refIndex !== null) {
-      while (ayahIdx < ayahRanges.length - 1 && w.refIndex >= ayahRanges[ayahIdx].end) ayahIdx++
-    }
-    buckets[Math.min(ayahIdx, buckets.length - 1)].push(w)
-  }
-  return buckets
-}
-
-/** The core correctness signal: forced-decoding confidence per reference word when
- * available (robust against the ASR "guessed a more common phrase" bias), falling back to
- * the free decode's exact text match if the forced pass wasn't supported this time. */
-function buildWordVerdicts(
-  aligned: AlignedWord[],
-  wordConfidences: number[] | null,
-  wordCount: number,
-  ayahRanges: AyahRange[],
-): WordVerdict[] {
-  const alignedByAyah = bucketByAyah(aligned, ayahRanges)
-  const freeByRef = new Map<number, AlignedWord>()
-  for (const w of aligned) if (w.refIndex !== null) freeByRef.set(w.refIndex, w)
-
-  return Array.from({ length: wordCount }, (_, i): WordVerdict => {
-    const ayahIdx = ayahRanges.findIndex((r) => i >= r.start && i < r.end)
-    const bucket = ayahIdx >= 0 ? alignedByAyah[ayahIdx] : []
-    const reached = bucket.some((w) => w.hypIndex !== null)
-    if (!reached) return { refIndex: i, status: 'unreached', confidence: null, hypGuess: null, freeStatus: null }
-
-    const freeEntry = freeByRef.get(i)
-    const freeStatus = freeEntry?.status ?? 'missing'
-    const hypGuess = freeEntry?.hypWord ?? null
-
-    if (wordConfidences) {
-      const confidence = wordConfidences[i] ?? 0
-      return { refIndex: i, status: confidence >= CONFIDENCE_THRESHOLD ? 'correct' : 'wrong', confidence, hypGuess, freeStatus }
-    }
-    return { refIndex: i, status: freeStatus === 'correct' ? 'correct' : 'wrong', confidence: null, hypGuess, freeStatus }
-  })
 }
 
 function AyahBadge({ n }: { n: number }) {
@@ -287,6 +223,7 @@ export function PracticePage() {
   const [qalqalahAlerts, setQalqalahAlerts] = useState<QalqalahAlert[]>([])
   const [micError, setMicError] = useState<string | null>(null)
   const [liveSnapshot, setLiveSnapshot] = useState<LiveSnapshot | null>(null)
+  const [passageMatch, setPassageMatch] = useState(0)
 
   const recorderRef = useRef<MicRecorder | null>(null)
   const liveTrackerRef = useRef<LiveTajweedTracker | null>(null)
@@ -337,8 +274,8 @@ export function PracticePage() {
   const alignedByAyah = useMemo(() => (aligned ? bucketByAyah(aligned, ayahRanges) : ayahRanges.map(() => [])), [aligned, ayahRanges])
 
   const wordVerdicts = useMemo<WordVerdict[] | null>(
-    () => (aligned ? buildWordVerdicts(aligned, wordConfidences, referenceWords.length, ayahRanges) : null),
-    [aligned, wordConfidences, referenceWords.length, ayahRanges],
+    () => (aligned ? buildWordVerdicts(aligned, wordConfidences, referenceWords.length, ayahRanges, passageMatch) : null),
+    [aligned, wordConfidences, referenceWords.length, ayahRanges, passageMatch],
   )
 
   const meta = surahs.find((s) => s.number === surahNumber)
@@ -351,16 +288,15 @@ export function PracticePage() {
     return { correct, total, accuracy: total === 0 ? 0 : Math.round((correct / total) * 100) }
   }, [wordVerdicts])
 
-  const tips = useMemo(() => {
+  const coachTips = useMemo(() => {
     if (!wordVerdicts) return []
-    const ruleIds = new Set<string>()
-    for (const v of wordVerdicts) {
-      if (v.status === 'wrong') {
-        for (const r of referenceWords[v.refIndex]?.rules ?? []) ruleIds.add(r)
-      }
-    }
-    return [...ruleIds].map((id) => TAJWEED_RULE_MAP[id as keyof typeof TAJWEED_RULE_MAP]).filter(Boolean)
-  }, [wordVerdicts, referenceWords])
+    return buildCoachTips({
+      referenceWords,
+      wrongRefIndices: wordVerdicts.filter((v) => v.status === 'wrong').map((v) => v.refIndex),
+      acousticAlerts,
+      qalqalahAlerts,
+    })
+  }, [wordVerdicts, referenceWords, acousticAlerts, qalqalahAlerts])
 
   function resetResult() {
     setAligned(null)
@@ -369,6 +305,7 @@ export function PracticePage() {
     setQalqalahAlerts([])
     setHypothesis(null)
     setLiveSnapshot(null)
+    setPassageMatch(0)
     liveTrackerRef.current = null
   }
 
@@ -426,7 +363,12 @@ export function PracticePage() {
     const result = alignWords(referenceNormalized, collapsed.normalized)
     setAligned(result)
 
-    const verdicts = buildWordVerdicts(result, resultConfidences, referenceWords.length, ayahRanges)
+    // How much this transcription looks like the selected passage at all — the gate that
+    // decides whether per-word leniency is safe (see buildWordVerdicts).
+    const passage = scoreTranscriptMatch(collapsed.normalized, referenceNormalized)
+    setPassageMatch(passage.score)
+
+    const verdicts = buildWordVerdicts(result, resultConfidences, referenceWords.length, ayahRanges, passage.score)
     const correctRefIndices = new Set(verdicts.filter((v) => v.status === 'correct').map((v) => v.refIndex))
 
     // Forced-alignment timing (precise, from the known text) is preferred; fall back to
@@ -757,6 +699,13 @@ export function PracticePage() {
             )}
           </div>
 
+          {passageMatch < PASSAGE_MATCH_FLOOR && (
+            <p className="rounded-xl border border-warn/40 bg-warn-soft px-4 py-3 text-sm font-semibold leading-relaxed text-warn">
+              ما سُمع بعيد عن نصّ المقطع المختار، فالنتيجة أعلاه غير موثوقة. تأكّد أنك تقرأ الآيات المحدّدة، وأن
+              الميكروفون قريب وواضح، ثم أعد المحاولة.
+            </p>
+          )}
+
           <div className="flex flex-wrap gap-4 rounded-xl border border-line-soft bg-bg/40 p-3 text-xs font-semibold text-muted">
             <span className="flex items-center gap-1.5">
               <span className="inline-block h-3 w-3 rounded bg-accent-soft ring-1 ring-accent/40" /> صحيحة (لون التجويد إن وُجد)
@@ -828,17 +777,22 @@ export function PracticePage() {
             </div>
           )}
 
-          {tips.length > 0 && (
+          {coachTips.length > 0 && (
             <div>
-              <h3 className="title-ornament mb-3 font-display text-base font-bold text-accent">نصائح تجويدية للمواضع التي تحتاج انتباهًا</h3>
+              <h3 className="title-ornament mb-3 font-display text-base font-bold text-accent">ما الذي تصلحه في المحاولة القادمة</h3>
               <ul className="space-y-2.5">
-                {tips.map((rule) => (
-                  <li key={rule.id} className="flex items-start gap-3 rounded-xl border border-line-soft bg-accent-soft/50 p-3.5 text-sm leading-relaxed">
-                    <span className="tajweed-legend-dot mt-1.5 shrink-0" style={{ backgroundColor: rule.color, color: rule.color }} />
-                    <span className="text-muted">
-                      <span className="font-display font-bold text-ink">{rule.nameAr}: </span>
-                      {rule.description}
+                {coachTips.map((tip) => (
+                  <li
+                    key={tip.key}
+                    className={clsx(
+                      'rounded-xl border p-3.5 text-sm leading-relaxed',
+                      tip.severity === 'high' ? 'border-danger/30 bg-danger-soft/40' : 'border-warn/30 bg-warn-soft/40',
+                    )}
+                  >
+                    <span className={clsx('font-display font-bold', tip.severity === 'high' ? 'text-danger' : 'text-warn')}>
+                      {tip.title}:{' '}
                     </span>
+                    <span className="text-muted">{tip.action}</span>
                   </li>
                 ))}
               </ul>

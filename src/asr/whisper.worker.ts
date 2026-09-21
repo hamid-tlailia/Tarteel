@@ -2,7 +2,6 @@
 import {
   pipeline,
   env,
-  softmax,
   Tensor,
   type AutomaticSpeechRecognitionPipeline,
   type WhisperForConditionalGeneration,
@@ -137,16 +136,38 @@ async function scoreAndAlignReferenceWords(
   const data = logits.data as Float32Array
 
   const initLength = initTokens.length
+
+  /** log P(token at `seqPos+1` = `tokenId`), computed stably as logit − logsumexp(logits)
+   * so we never materialise a ~51k-entry probability array per token. */
+  function tokenLogProb(seqPos: number, tokenId: number): number {
+    const row = data.subarray(seqPos * vocabSize, (seqPos + 1) * vocabSize)
+    let max = -Infinity
+    for (let i = 0; i < row.length; i++) if (row[i] > max) max = row[i]
+    let sumExp = 0
+    for (let i = 0; i < row.length; i++) sumExp += Math.exp(row[i] - max)
+    const logZ = max + Math.log(sumExp)
+    return (row[tokenId] ?? -Infinity) - logZ
+  }
+
+  // Per-word confidence is the GEOMETRIC MEAN of its tokens' probabilities (i.e. exp of the
+  // mean log-prob), the standard way to score a forced-decoded span.
+  //
+  // This used to take the *minimum* token probability instead, which was catastrophically
+  // wrong: Arabic words split into 3–6 BPE tokens in Whisper's multilingual vocabulary, and
+  // a correctly recited word routinely still has one sub-token the model is unsure about
+  // (it spreads probability across plausible spellings). The minimum therefore sat below
+  // any usable threshold for nearly *every* word, so a perfectly recited ayah scored 0%.
+  // The geometric mean judges the word as a whole, so one hesitant sub-token no longer
+  // condemns it while a genuinely unrecited word — where *every* token is improbable —
+  // still scores near zero.
   const confidences = wordSpans.map(([start, end]) => {
-    let minProb = 1
+    if (end <= start) return 0
+    let sumLogP = 0
     for (let t = start; t < end; t++) {
-      const seqPos = initLength + t - 1 // logits at seqPos predict the token at seqPos+1
-      const row = data.subarray(seqPos * vocabSize, (seqPos + 1) * vocabSize)
-      const probs = softmax(Array.from(row))
-      const p = probs[targetTokens[t]] ?? 0
-      if (p < minProb) minProb = p
+      sumLogP += tokenLogProb(initLength + t - 1, targetTokens[t])
     }
-    return minProb
+    const geometricMean = Math.exp(sumLogP / (end - start))
+    return Number.isFinite(geometricMean) ? geometricMean : 0
   })
 
   // Best-effort word timing from the *same* forced pass, via the same cross-attention +
