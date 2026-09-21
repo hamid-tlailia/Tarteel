@@ -10,6 +10,10 @@ export interface TranscribeResult {
    * same order as the `referenceWords` passed to `transcribe()`. Null if this model's
    * export doesn't support the forced pass — callers should fall back to text matching. */
   wordConfidences: number[] | null
+  /** Per-word [start, end] seconds from forced alignment (cross-attention + DTW on the
+   * known text), same order as `referenceWords`. Null if unavailable this time — callers
+   * should fall back to the free decode's approximate word timing in `chunks`. */
+  wordTimings: ([number, number] | null)[] | null
 }
 
 interface ProgressInfo {
@@ -58,6 +62,7 @@ export function useWhisper() {
           text: data.text as string,
           chunks: (data.chunks as TimedChunk[]) ?? [],
           wordConfidences: (data.wordConfidences as number[] | null) ?? null,
+          wordTimings: (data.wordTimings as ([number, number] | null)[] | null) ?? null,
         })
         pendingRef.current = null
       } else if (data.type === 'error') {

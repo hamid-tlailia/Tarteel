@@ -31,6 +31,31 @@ export interface TimedChunk {
   timestamp: [number, number | null]
 }
 
+export interface ForcedAlignmentResult {
+  /** One confidence score (0–1) per reference word — see scoreAndAlignReferenceWords. */
+  confidences: number[]
+  /** One [start, end] time in seconds per reference word, or null where cross-attention
+   * extraction wasn't available/successful for that word. Null entirely if this export
+   * doesn't support cross-attention output at all. */
+  wordTimings: ([number, number] | null)[] | null
+}
+
+/** Pulls the per-layer cross-attention tensors out of a raw model output object. ONNX
+ * decoder exports that include them name the outputs like `cross_attentions.0`,
+ * `cross_attentions.1`, ... (one per decoder layer) — sorted by that trailing index so the
+ * layer order is correct regardless of raw object key iteration order. */
+function getCrossAttentionLayers(modelOutput: Record<string, Tensor>): Tensor[] | null {
+  const entries = Object.keys(modelOutput)
+    .filter((k) => k.startsWith('cross_attentions'))
+    .map((k) => {
+      const match = k.match(/(\d+)$/)
+      return { key: k, layer: match ? Number(match[1]) : 0 }
+    })
+    .sort((a, b) => a.layer - b.layer)
+  if (entries.length === 0) return null
+  return entries.map((e) => modelOutput[e.key])
+}
+
 /**
  * Scores each *known* reference word against the audio via forced decoding (teacher
  * forcing) instead of asking Whisper to freely guess what was said.
@@ -50,12 +75,12 @@ export interface TimedChunk {
  * entry in `referenceWords`, or throws if this model's export doesn't support a plain
  * forward pass the way expected — callers should fall back to text-match comparison.
  */
-async function scoreReferenceWords(
+async function scoreAndAlignReferenceWords(
   transcriber: AutomaticSpeechRecognitionPipeline,
   audio: Float32Array,
   referenceWords: string[],
-): Promise<number[]> {
-  if (referenceWords.length === 0) return []
+): Promise<ForcedAlignmentResult> {
+  if (referenceWords.length === 0) return { confidences: [], wordTimings: [] }
 
   const model = transcriber.model as WhisperForConditionalGeneration
   const tokenizer = transcriber.tokenizer
@@ -88,7 +113,7 @@ async function scoreReferenceWords(
   const data = logits.data as Float32Array
 
   const initLength = initTokens.length
-  return wordSpans.map(([start, end]) => {
+  const confidences = wordSpans.map(([start, end]) => {
     let minProb = 1
     for (let t = start; t < end; t++) {
       const seqPos = initLength + t - 1 // logits at seqPos predict the token at seqPos+1
@@ -99,6 +124,49 @@ async function scoreReferenceWords(
     }
     return minProb
   })
+
+  // Best-effort word timing from the *same* forced pass, via the same cross-attention +
+  // dynamic-time-warping technique transformers.js itself uses for `return_timestamps:
+  // 'word'` — except here it's applied against the known/forced sequence instead of a
+  // freely generated one, so the timing lines up with the reference word actually being
+  // checked rather than whatever the free decode guessed in its place. `_extract_token_
+  // timestamps` expects the "one array of layer-tensors per generation step" shape that
+  // generate()'s autoregressive loop produces; our single non-autoregressive forward pass
+  // already covers the whole sequence in one go, so we simply wrap it as if it were one
+  // step containing every position.
+  let wordTimings: ([number, number] | null)[] | null = null
+  try {
+    const crossAttentionLayers = getCrossAttentionLayers(output)
+    const alignmentHeads = generationConfig.alignment_heads
+    const featureExtractor = processor.feature_extractor
+    if (crossAttentionLayers && alignmentHeads && featureExtractor) {
+      const featureExtractorConfig = featureExtractor.config as { hop_length: number; chunk_length: number }
+      const maxSourcePositions = (model.config as unknown as { max_source_positions: number }).max_source_positions
+      const numFrames = Math.floor(audio.length / featureExtractorConfig.hop_length)
+      const timePrecision = featureExtractorConfig.chunk_length / maxSourcePositions
+
+      const tokenTimestamps = model._extract_token_timestamps(
+        { cross_attentions: [crossAttentionLayers], sequences: decoder_input_ids },
+        alignmentHeads,
+        numFrames,
+        timePrecision,
+        initLength,
+      )
+      const ts = tokenTimestamps.data as Float32Array
+      const at = (idx: number) => (idx >= 0 && idx < ts.length ? ts[idx] : null)
+
+      wordTimings = wordSpans.map(([start, end]) => {
+        const startTime = at(initLength + start)
+        const endTime = at(initLength + end) ?? at(ts.length - 1)
+        if (startTime === null || endTime === null) return null
+        return [startTime, Math.max(endTime, startTime)]
+      })
+    }
+  } catch {
+    wordTimings = null
+  }
+
+  return { confidences, wordTimings }
 }
 
 self.onmessage = async (event: MessageEvent<IncomingMessage>) => {
@@ -136,7 +204,7 @@ self.onmessage = async (event: MessageEvent<IncomingMessage>) => {
 
       // Free decode: used for approximate word timing (madd-duration checks), rough
       // "how far has the reciter gotten" progress, and a human-readable hypothesis text —
-      // no longer the source of truth for correctness (see scoreReferenceWords above).
+      // no longer the source of truth for correctness (see scoreAndAlignReferenceWords below).
       let output
       let hasTimestamps = true
       try {
@@ -149,17 +217,21 @@ self.onmessage = async (event: MessageEvent<IncomingMessage>) => {
       const result = Array.isArray(output) ? output[0] : output
       const chunks: TimedChunk[] = hasTimestamps && Array.isArray(result?.chunks) ? result.chunks : []
 
-      // Forced-decoding confidence is the important new signal. If this model's ONNX
-      // export doesn't support a plain (non-generate) forward call the way we expect,
+      // Forced-decoding confidence + timing is the important new signal. If this model's
+      // ONNX export doesn't support a plain (non-generate) forward call the way we expect,
       // fail soft: the caller falls back to text-match correctness like before.
       let wordConfidences: number[] | null = null
+      let wordTimings: ([number, number] | null)[] | null = null
       try {
-        wordConfidences = await scoreReferenceWords(transcriber, msg.audio, msg.referenceWords)
+        const forced = await scoreAndAlignReferenceWords(transcriber, msg.audio, msg.referenceWords)
+        wordConfidences = forced.confidences
+        wordTimings = forced.wordTimings
       } catch {
         wordConfidences = null
+        wordTimings = null
       }
 
-      self.postMessage({ type: 'result', text: result.text, chunks, wordConfidences, requestId: msg.requestId })
+      self.postMessage({ type: 'result', text: result.text, chunks, wordConfidences, wordTimings, requestId: msg.requestId })
     } catch (err) {
       self.postMessage({ type: 'error', error: (err as Error).message, requestId: msg.requestId })
     }

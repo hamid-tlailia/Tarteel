@@ -8,7 +8,12 @@ import { StopIcon } from '../components/RecorderIcons'
 import { primaryRule, segmentsToWords, TAJWEED_RULE_MAP, type WordWithRules } from '../lib/tajweed'
 import { normalizeArabic } from '../lib/arabicText'
 import { alignWords, type AlignedWord } from '../lib/alignment'
-import { detectMaddDurationAlerts, type AcousticAlert } from '../lib/acousticTajweed'
+import {
+  detectMaddDurationAlertsForced,
+  detectMaddDurationAlertsFromFreeDecode,
+  type AcousticAlert,
+} from '../lib/acousticTajweed'
+import { detectQalqalahIssues, type QalqalahAlert } from '../lib/qalqalah'
 import { collapseRepeatedWords } from '../lib/repetition'
 import { useWhisper } from '../asr/useWhisper'
 import { decodeToPcm16k, MicRecorder, trimSilence } from '../asr/audio'
@@ -116,20 +121,24 @@ function AyahBadge({ n }: { n: number }) {
 }
 
 /** Renders one ayah's recited words: its own tajweed color when correct, orange when the
- * madd was dropped entirely, amber when just short, red when wrong/missing, blue for extra
- * words the reciter said that aren't in the text. */
+ * madd was dropped entirely, amber when just short, purple when a qalqalah bounce wasn't
+ * detected, red when wrong/missing, blue for extra words the reciter said that aren't in
+ * the text. */
 function ComparedWords({
   verdicts,
   referenceWords,
   acousticAlerts,
+  qalqalahAlerts,
   extraWords,
 }: {
   verdicts: WordVerdict[]
   referenceWords: WordWithRules[]
   acousticAlerts: AcousticAlert[]
+  qalqalahAlerts: QalqalahAlert[]
   extraWords: string[]
 }) {
   const acousticByRefIndex = useMemo(() => new Map(acousticAlerts.map((a) => [a.refIndex, a])), [acousticAlerts])
+  const qalqalahRefIndices = useMemo(() => new Set(qalqalahAlerts.map((a) => a.refIndex)), [qalqalahAlerts])
 
   return (
     <div className="flex flex-wrap gap-x-1.5 gap-y-2 font-quran text-2xl" dir="rtl">
@@ -138,6 +147,7 @@ function ComparedWords({
         const salientRule = refWord ? primaryRule(refWord.rules) : undefined
         const tajweedColor = salientRule ? TAJWEED_RULE_MAP[salientRule].color : null
         const acoustic = acousticByRefIndex.get(v.refIndex)
+        const hasQalqalahIssue = qalqalahRefIndices.has(v.refIndex)
         const confidenceLabel = v.confidence !== null ? ` (ثقة ${Math.round(v.confidence * 100)}%)` : ''
 
         if (v.status === 'wrong') {
@@ -177,6 +187,18 @@ function ComparedWords({
           )
         }
 
+        if (hasQalqalahIssue) {
+          return (
+            <span
+              key={v.refIndex}
+              className="rounded bg-purple-100 px-1.5 py-0.5 text-purple-800 underline decoration-wavy decoration-purple-500 dark:bg-purple-900/30 dark:text-purple-200"
+              title={`💥 قلقلة غير واضحة${confidenceLabel}`}
+            >
+              {refWord?.word}
+            </span>
+          )
+        }
+
         return (
           <span key={v.refIndex} className="px-1.5 py-0.5" style={tajweedColor ? { color: tajweedColor } : undefined} title={confidenceLabel || undefined}>
             {refWord?.word}
@@ -206,8 +228,9 @@ export function PracticePage() {
   const [busy, setBusy] = useState(false)
   const [hypothesis, setHypothesis] = useState<string | null>(null)
   const [aligned, setAligned] = useState<AlignedWord[] | null>(null)
-  const [chunks, setChunks] = useState<TimedChunk[]>([])
   const [wordConfidences, setWordConfidences] = useState<number[] | null>(null)
+  const [acousticAlerts, setAcousticAlerts] = useState<AcousticAlert[]>([])
+  const [qalqalahAlerts, setQalqalahAlerts] = useState<QalqalahAlert[]>([])
   const [micError, setMicError] = useState<string | null>(null)
   const [isFinal, setIsFinal] = useState(false)
 
@@ -263,16 +286,7 @@ export function PracticePage() {
     [aligned, wordConfidences, referenceWords.length, ayahRanges],
   )
 
-  const correctRefIndices = useMemo(
-    () => new Set((wordVerdicts ?? []).filter((v) => v.status === 'correct').map((v) => v.refIndex)),
-    [wordVerdicts],
-  )
-
   const meta = surahs.find((s) => s.number === surahNumber)
-  const acousticAlerts = useMemo(
-    () => (aligned ? detectMaddDurationAlerts(aligned, referenceWords, chunks, correctRefIndices) : []),
-    [aligned, referenceWords, chunks, correctRefIndices],
-  )
 
   const score = useMemo(() => {
     if (!wordVerdicts) return null
@@ -295,8 +309,9 @@ export function PracticePage() {
 
   function resetResult() {
     setAligned(null)
-    setChunks([])
     setWordConfidences(null)
+    setAcousticAlerts([])
+    setQalqalahAlerts([])
     setHypothesis(null)
     setIsFinal(false)
     seenIssueKeysRef.current = new Set()
@@ -326,6 +341,8 @@ export function PracticePage() {
     text: string,
     resultChunks: TimedChunk[],
     resultConfidences: number[] | null,
+    resultTimings: ([number, number] | null)[] | null,
+    audioForAnalysis: Float32Array,
     final: boolean,
   ) {
     const { raw, normalized } = hypWordsFromResult(text, resultChunks)
@@ -335,7 +352,6 @@ export function PracticePage() {
     const displayText = collapsed.raw.join(' ') || text
 
     setHypothesis(displayText)
-    setChunks(collapsed.chunks)
     setWordConfidences(resultConfidences)
     const result = alignWords(referenceNormalized, collapsed.normalized)
     setAligned(result)
@@ -346,10 +362,20 @@ export function PracticePage() {
     // problem — a word that's still wrong on the next tick shouldn't buzz again.
     const verdicts = buildWordVerdicts(result, resultConfidences, referenceWords.length, ayahRanges)
     const correctRefIndices = new Set(verdicts.filter((v) => v.status === 'correct').map((v) => v.refIndex))
-    const acoustic = detectMaddDurationAlerts(result, referenceWords, collapsed.chunks, correctRefIndices)
+
+    // Forced-alignment timing (precise, from the known text) is preferred; fall back to
+    // the free decode's approximate word timestamps when it isn't available this time.
+    const acoustic = resultTimings
+      ? detectMaddDurationAlertsForced(referenceWords, resultTimings, correctRefIndices)
+      : detectMaddDurationAlertsFromFreeDecode(result, referenceWords, collapsed.chunks, correctRefIndices)
+    const qalqalah = resultTimings ? detectQalqalahIssues(audioForAnalysis, referenceWords, resultTimings, correctRefIndices) : []
+    setAcousticAlerts(acoustic)
+    setQalqalahAlerts(qalqalah)
+
     const issueKeys = new Set<string>([
       ...verdicts.filter((v) => v.status === 'wrong').map((v) => `word:${v.refIndex}`),
       ...acoustic.map((a) => `madd:${a.refIndex}:${a.rule}:${a.severity}`),
+      ...qalqalah.map((a) => `qalqalah:${a.refIndex}`),
     ])
     let hasNewIssue = false
     for (const key of issueKeys) {
@@ -374,8 +400,13 @@ export function PracticePage() {
       if (trimmed.length < MIN_SPEECH_SAMPLES) return
       if (trimmed.length - lastLiveSampleCountRef.current < MIN_NEW_SPEECH_SAMPLES) return
       lastLiveSampleCountRef.current = trimmed.length
-      const { text, chunks: resultChunks, wordConfidences: confidences } = await whisper.transcribe(trimmed, referenceNormalized)
-      applyResult(text, resultChunks, confidences, false)
+      const {
+        text,
+        chunks: resultChunks,
+        wordConfidences: confidences,
+        wordTimings: timings,
+      } = await whisper.transcribe(trimmed, referenceNormalized)
+      applyResult(text, resultChunks, confidences, timings, trimmed, false)
     } catch {
       // Transient decode/inference hiccups during live polling are non-fatal — just skip this tick.
     } finally {
@@ -410,8 +441,13 @@ export function PracticePage() {
         setMicError('لم يتم رصد صوت واضح. حاول التسجيل مرة أخرى بصوت أعلى وأقرب للميكروفون.')
         return
       }
-      const { text, chunks: resultChunks, wordConfidences: confidences } = await whisper.transcribe(trimmed, referenceNormalized)
-      const verdicts = applyResult(text, resultChunks, confidences, true)
+      const {
+        text,
+        chunks: resultChunks,
+        wordConfidences: confidences,
+        wordTimings: timings,
+      } = await whisper.transcribe(trimmed, referenceNormalized)
+      const verdicts = applyResult(text, resultChunks, confidences, timings, trimmed, true)
       if (meta) {
         const reached = verdicts.filter((v) => v.status !== 'unreached')
         const correct = reached.filter((v) => v.status === 'correct').length
@@ -529,6 +565,7 @@ export function PracticePage() {
                           verdicts={verdictsForAyah}
                           referenceWords={referenceWords}
                           acousticAlerts={acousticAlerts}
+                          qalqalahAlerts={qalqalahAlerts}
                           extraWords={extraWords}
                         />
                       ) : (
@@ -657,6 +694,9 @@ export function PracticePage() {
             <span>
               <span className="ml-1 inline-block h-3 w-3 rounded bg-sky-100 dark:bg-sky-900/30" /> زائدة
             </span>
+            <span>
+              <span className="ml-1 inline-block h-3 w-3 rounded bg-purple-100 dark:bg-purple-900/30" /> قلقلة غير واضحة
+            </span>
           </div>
 
           {hypothesis && (
@@ -693,6 +733,25 @@ export function PracticePage() {
                         {TAJWEED_RULE_MAP[a.rule].nameAr} يتطلب مدًا أطول قليلًا.
                       </>
                     )}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+
+          {qalqalahAlerts.length > 0 && (
+            <div>
+              <h3 className="mb-2 text-sm font-bold text-purple-700 dark:text-purple-300">
+                💥 تنبيهات صوتية تجريبية (القلقلة)
+              </h3>
+              <ul className="space-y-2">
+                {qalqalahAlerts.map((a) => (
+                  <li
+                    key={a.refIndex}
+                    className="rounded-lg bg-purple-50 p-3 text-sm text-purple-900 dark:bg-purple-900/20 dark:text-purple-100"
+                  >
+                    القلقلة في كلمة <span className="font-quran font-bold">«{a.word}»</span> لم تظهر بوضوح — حاول
+                    إبراز ارتداد الصوت (النبرة) عند نطق الحرف الساكن.
                   </li>
                 ))}
               </ul>

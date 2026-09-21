@@ -7,17 +7,13 @@ import type { TimedChunk } from '../asr/whisper.worker'
  * Heuristic acoustic check for madd (elongation) rules — the first step beyond plain
  * text comparison. Whisper's ASR text output can't tell a rushed madd from a full one
  * (both transcribe to the same word), so this looks at the *duration* of each recited
- * word (from Whisper's word-level timestamps) relative to the reciter's own median word
- * duration, and flags madd-tagged words that were recited noticeably shorter than the
- * elongation their rule requires.
+ * word relative to the reciter's own median word duration, and flags madd-tagged words
+ * that were recited noticeably shorter than the elongation their rule requires.
  *
  * This is a deliberately simple v1: real madd length depends on syllable count and local
- * tempo too, and Whisper's word timestamps have some jitter, especially on a general
- * (non-Quran-specialized) model — so treat this as an experimental signal, not ground truth.
- *
- * Only checks words the caller has already confirmed were actually recited (via
- * `correctRefIndices` — typically from forced-decoding confidence, see whisper.worker.ts);
- * timing for those words still comes from the free-decode alignment's word timestamps.
+ * tempo too — so treat this as an experimental signal, not ground truth. Only checks words
+ * the caller has already confirmed were actually recited (via `correctRefIndices`,
+ * typically from forced-decoding confidence — see whisper.worker.ts).
  */
 
 const MADD_MIN_RELATIVE_DURATION: Partial<Record<TajweedRuleId, number>> = {
@@ -44,7 +40,53 @@ function median(values: number[]): number {
   return sorted.length % 2 === 0 ? (sorted[mid - 1] + sorted[mid]) / 2 : sorted[mid]
 }
 
-export function detectMaddDurationAlerts(
+/**
+ * Primary path: uses precise per-reference-word timing from forced alignment (cross-
+ * attention + DTW against the *known* text — see scoreAndAlignReferenceWords in
+ * whisper.worker.ts). The measured span is the madd word's own forced time range, not
+ * whatever word a free decode happened to guess in its place.
+ */
+export function detectMaddDurationAlertsForced(
+  referenceWords: WordWithRules[],
+  wordTimings: ([number, number] | null)[],
+  correctRefIndices: Set<number>,
+): AcousticAlert[] {
+  const durations = wordTimings.map((t) => (t ? t[1] - t[0] : 0)).filter((d) => d > 0)
+  if (durations.length < 3) return []
+  const baseline = median(durations)
+  if (baseline <= 0) return []
+
+  const alerts: AcousticAlert[] = []
+  referenceWords.forEach((refWord, i) => {
+    if (!correctRefIndices.has(i)) return
+    const timing = wordTimings[i]
+    if (!timing) return
+    const maddRule = refWord.rules.find((r) => r in MADD_MIN_RELATIVE_DURATION)
+    if (!maddRule) return
+
+    const duration = timing[1] - timing[0]
+    const expectedMin = baseline * MADD_MIN_RELATIVE_DURATION[maddRule]!
+    if (duration < expectedMin) {
+      alerts.push({
+        refIndex: i,
+        word: refWord.word,
+        rule: maddRule,
+        durationMs: duration * 1000,
+        expectedMinMs: expectedMin * 1000,
+        severity: duration <= baseline ? 'severe' : 'mild',
+      })
+    }
+  })
+  return alerts
+}
+
+/**
+ * Fallback path for when forced-alignment timing isn't available this time: approximates
+ * each word's duration from the free decode's own (unforced) word timestamps via the
+ * free-decode alignment. Less precise — the "word" boundaries come from whatever the free
+ * decode guessed, which may not exactly match the reference word's real span.
+ */
+export function detectMaddDurationAlertsFromFreeDecode(
   aligned: AlignedWord[],
   referenceWords: WordWithRules[],
   chunks: TimedChunk[],
