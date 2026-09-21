@@ -15,14 +15,17 @@ import {
 } from '../lib/acousticTajweed'
 import { detectQalqalahIssues, type QalqalahAlert } from '../lib/qalqalah'
 import { collapseRepeatedWords } from '../lib/repetition'
+import { LiveTajweedTracker, type LiveSnapshot, type LiveWordResult } from '../lib/liveTracker'
 import { useWhisper } from '../asr/useWhisper'
 import { decodeToPcm16k, MicRecorder, trimSilence } from '../asr/audio'
 import type { TimedChunk } from '../asr/whisper.worker'
 import { useProgressStore } from '../store/progressStore'
 
-const LIVE_TICK_MS = 3000
 const MIN_SPEECH_SAMPLES = 8000 // ~0.5s at 16kHz, after silence trimming
-const MIN_NEW_SPEECH_SAMPLES = 4000 // skip a live tick if there's no meaningful new speech yet
+// Tolerance band for the live timing tracker (0=very lenient, 1=strict) — see tauTolerance
+// in liveTracker.ts. Not user-configurable yet; a reasonable middle ground for a first pass.
+const LIVE_TAU = 0.45
+const LIVE_SNAPSHOT_INTERVAL_MS = 120
 
 // Forced-decoding confidence is a *relative* likelihood, not a calibrated probability — this
 // threshold is a starting guess (lenient on purpose: a false "wrong" is more discouraging
@@ -210,6 +213,62 @@ function ComparedWords({
   )
 }
 
+/** Renders one ayah's words while still recording, colored by the live RMS/VAD tracker's
+ * *timing* verdict alone (no ASR involved yet — see liveTracker.ts): the in-progress word
+ * pulses gold, a well-timed word shows its own tajweed color, a mistimed one turns amber
+ * (short/long) or red (nothing heard), and anything not reached yet stays faint. Word
+ * *correctness* (right/wrong text) only becomes available once, from the single Whisper
+ * pass that runs after the reciter stops — see ComparedWords for that final rendering. */
+function LiveWords({ words, liveWords }: { words: WordWithRules[]; liveWords: LiveWordResult[] }) {
+  return (
+    <div className="flex flex-wrap gap-x-1.5 gap-y-2 font-quran text-2xl" dir="rtl">
+      {words.map((w, i) => {
+        const live = liveWords[i]
+        const salientRule = primaryRule(w.rules)
+        const tajweedColor = salientRule ? TAJWEED_RULE_MAP[salientRule].color : null
+
+        if (!live || live.status === 'pending') {
+          return (
+            <span key={i} className="px-1.5 py-0.5 text-faint/50">
+              {w.word}
+            </span>
+          )
+        }
+        if (live.status === 'current') {
+          return (
+            <span key={i} className="animate-pulse rounded-lg bg-accent-soft px-1.5 py-0.5 text-accent ring-1 ring-gold/60">
+              {w.word}
+            </span>
+          )
+        }
+        if (live.status === 'short' || live.status === 'long') {
+          return (
+            <span
+              key={i}
+              className="rounded-lg bg-warn-soft px-1.5 py-0.5 text-warn underline decoration-wavy decoration-warn"
+              title={live.status === 'short' ? '⏱️ أقصر من الزمن المتوقع لهذه الكلمة' : '⏱️ أطول من الزمن المتوقع لهذه الكلمة'}
+            >
+              {w.word}
+            </span>
+          )
+        }
+        if (live.status === 'silent') {
+          return (
+            <span key={i} className="rounded-lg bg-danger-soft px-1.5 py-0.5 text-danger" title="لم يُسمع نطق واضح لهذه الكلمة">
+              {w.word}
+            </span>
+          )
+        }
+        return (
+          <span key={i} className="px-1.5 py-0.5" style={tajweedColor ? { color: tajweedColor } : undefined}>
+            {w.word}
+          </span>
+        )
+      })}
+    </div>
+  )
+}
+
 const SELECT_CLASS =
   'w-full rounded-xl border border-line bg-elevated px-3 py-2 text-sm font-medium text-ink shadow-sm transition focus:border-gold focus:outline-none'
 
@@ -227,13 +286,14 @@ export function PracticePage() {
   const [acousticAlerts, setAcousticAlerts] = useState<AcousticAlert[]>([])
   const [qalqalahAlerts, setQalqalahAlerts] = useState<QalqalahAlert[]>([])
   const [micError, setMicError] = useState<string | null>(null)
-  const [isFinal, setIsFinal] = useState(false)
+  const [liveSnapshot, setLiveSnapshot] = useState<LiveSnapshot | null>(null)
 
   const recorderRef = useRef<MicRecorder | null>(null)
-  const liveTimerRef = useRef<number | null>(null)
-  const liveBusyRef = useRef(false)
-  const lastLiveSampleCountRef = useRef(0)
-  const seenIssueKeysRef = useRef<Set<string>>(new Set())
+  const liveTrackerRef = useRef<LiveTajweedTracker | null>(null)
+  const audioCtxRef = useRef<AudioContext | null>(null)
+  const analyserRef = useRef<AnalyserNode | null>(null)
+  const rafIdRef = useRef<number | null>(null)
+  const snapshotIntervalRef = useRef<number | null>(null)
   const whisper = useWhisper()
   const addAttempt = useProgressStore((s) => s.addAttempt)
 
@@ -251,7 +311,7 @@ export function PracticePage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [surahNumber])
 
-  useEffect(() => stopLiveTimer, [])
+  useEffect(() => stopLiveAnalysis, [])
 
   const selectedAyahs = useMemo(
     () => ayahs.filter((a) => a.numberInSurah >= fromAyah && a.numberInSurah <= toAyah),
@@ -308,9 +368,8 @@ export function PracticePage() {
     setAcousticAlerts([])
     setQalqalahAlerts([])
     setHypothesis(null)
-    setIsFinal(false)
-    seenIssueKeysRef.current = new Set()
-    lastLiveSampleCountRef.current = 0
+    setLiveSnapshot(null)
+    liveTrackerRef.current = null
   }
 
   // Selecting the ayah range with two independent selects: moving "from" forward pulls "to"
@@ -325,20 +384,36 @@ export function PracticePage() {
     setFromAyah((prev) => Math.min(prev, value))
   }
 
-  function stopLiveTimer() {
-    if (liveTimerRef.current !== null) {
-      window.clearInterval(liveTimerRef.current)
-      liveTimerRef.current = null
+  /** Tears down the live RMS analysis loop (rAF feed + snapshot interval + AudioContext)
+   * without touching the MediaRecorder itself — called both on stop and on unmount. */
+  function stopLiveAnalysis() {
+    if (rafIdRef.current !== null) {
+      cancelAnimationFrame(rafIdRef.current)
+      rafIdRef.current = null
+    }
+    if (snapshotIntervalRef.current !== null) {
+      window.clearInterval(snapshotIntervalRef.current)
+      snapshotIntervalRef.current = null
+    }
+    analyserRef.current = null
+    if (audioCtxRef.current) {
+      audioCtxRef.current.close().catch(() => {})
+      audioCtxRef.current = null
     }
   }
 
+  /** Runs once, on the complete recording after the reciter stops: the single Whisper pass
+   * (forced-decoding confidence + free decode + cross-attention timing) that decides word
+   * correctness and computes the final acoustic/qalqalah alerts. Live-recording feedback
+   * (per-ayah reveal, per-word timing) comes entirely from the RMS tracker instead — see
+   * startRecording — so this no longer needs to run repeatedly or dedupe against a previous
+   * tick's issues. */
   function applyResult(
     text: string,
     resultChunks: TimedChunk[],
     resultConfidences: number[] | null,
     resultTimings: ([number, number] | null)[] | null,
     audioForAnalysis: Float32Array,
-    final: boolean,
   ) {
     const { raw, normalized } = hypWordsFromResult(text, resultChunks)
     // Defend against ASR hallucination loops (e.g. the same word repeated dozens of times
@@ -350,11 +425,7 @@ export function PracticePage() {
     setWordConfidences(resultConfidences)
     const result = alignWords(referenceNormalized, collapsed.normalized)
     setAligned(result)
-    setIsFinal(final)
 
-    // Compute verdicts from these fresh local values (not the memoized state, which won't
-    // reflect this update until the next render) to decide whether to vibrate for a *new*
-    // problem — a word that's still wrong on the next tick shouldn't buzz again.
     const verdicts = buildWordVerdicts(result, resultConfidences, referenceWords.length, ayahRanges)
     const correctRefIndices = new Set(verdicts.filter((v) => v.status === 'correct').map((v) => v.refIndex))
 
@@ -367,46 +438,11 @@ export function PracticePage() {
     setAcousticAlerts(acoustic)
     setQalqalahAlerts(qalqalah)
 
-    const issueKeys = new Set<string>([
-      ...verdicts.filter((v) => v.status === 'wrong').map((v) => `word:${v.refIndex}`),
-      ...acoustic.map((a) => `madd:${a.refIndex}:${a.rule}:${a.severity}`),
-      ...qalqalah.map((a) => `qalqalah:${a.refIndex}`),
-    ])
-    let hasNewIssue = false
-    for (const key of issueKeys) {
-      if (!seenIssueKeysRef.current.has(key)) hasNewIssue = true
+    if (verdicts.some((v) => v.status === 'wrong') || acoustic.length > 0 || qalqalah.length > 0) {
+      vibrate([80, 60, 80])
     }
-    seenIssueKeysRef.current = issueKeys
-    if (hasNewIssue) vibrate(final ? [80, 60, 80] : 120)
 
     return verdicts
-  }
-
-  async function runLiveTick() {
-    if (liveBusyRef.current) return
-    const recorder = recorderRef.current
-    if (!recorder) return
-    liveBusyRef.current = true
-    try {
-      const blob = await recorder.snapshot()
-      if (!blob) return
-      const pcm = await decodeToPcm16k(blob)
-      const trimmed = trimSilence(pcm)
-      if (trimmed.length < MIN_SPEECH_SAMPLES) return
-      if (trimmed.length - lastLiveSampleCountRef.current < MIN_NEW_SPEECH_SAMPLES) return
-      lastLiveSampleCountRef.current = trimmed.length
-      const {
-        text,
-        chunks: resultChunks,
-        wordConfidences: confidences,
-        wordTimings: timings,
-      } = await whisper.transcribe(trimmed, referenceNormalized)
-      applyResult(text, resultChunks, confidences, timings, trimmed, false)
-    } catch {
-      // Transient decode/inference hiccups during live polling are non-fatal — just skip this tick.
-    } finally {
-      liveBusyRef.current = false
-    }
   }
 
   const startRecording = async () => {
@@ -417,7 +453,52 @@ export function PracticePage() {
       await recorder.start()
       recorderRef.current = recorder
       setRecording(true)
-      liveTimerRef.current = window.setInterval(runLiveTick, LIVE_TICK_MS)
+
+      // Instant per-word timing feedback via microphone energy alone (no ASR while
+      // recording) — see liveTracker.ts for why this replaced the old approach of
+      // re-transcribing the growing recording with Whisper every few seconds.
+      const tracker = new LiveTajweedTracker(referenceWords, LIVE_TAU, (_index, status) => {
+        if (status === 'silent') vibrate([100, 50, 100])
+        else if (status === 'short' || status === 'long') vibrate(60)
+      })
+      liveTrackerRef.current = tracker
+      setLiveSnapshot(tracker.snapshot())
+
+      const stream = recorder.getStream()
+      if (stream) {
+        try {
+          const AudioCtx =
+            window.AudioContext ?? (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext
+          const audioCtx = new AudioCtx()
+          const source = audioCtx.createMediaStreamSource(stream)
+          const analyser = audioCtx.createAnalyser()
+          analyser.fftSize = 1024
+          source.connect(analyser)
+          audioCtxRef.current = audioCtx
+          analyserRef.current = analyser
+
+          const timeDomain = new Float32Array(analyser.fftSize)
+          const feedLoop = () => {
+            const an = analyserRef.current
+            const tr = liveTrackerRef.current
+            if (!an || !tr) return
+            an.getFloatTimeDomainData(timeDomain)
+            let sumSquares = 0
+            for (let i = 0; i < timeDomain.length; i++) sumSquares += timeDomain[i] * timeDomain[i]
+            const rms = Math.sqrt(sumSquares / timeDomain.length)
+            tr.feed(rms, performance.now())
+            rafIdRef.current = requestAnimationFrame(feedLoop)
+          }
+          rafIdRef.current = requestAnimationFrame(feedLoop)
+
+          snapshotIntervalRef.current = window.setInterval(() => {
+            const tr = liveTrackerRef.current
+            if (tr) setLiveSnapshot(tr.snapshot())
+          }, LIVE_SNAPSHOT_INTERVAL_MS)
+        } catch {
+          // Live per-word timing is a nice-to-have; recording itself still works without it.
+        }
+      }
     } catch {
       setMicError('تعذّر الوصول إلى الميكروفون. تأكد من منح الإذن للمتصفح.')
     }
@@ -425,7 +506,8 @@ export function PracticePage() {
 
   const stopRecording = async () => {
     if (!recorderRef.current) return
-    stopLiveTimer()
+    stopLiveAnalysis()
+    liveTrackerRef.current?.finish()
     setRecording(false)
     setBusy(true)
     try {
@@ -442,7 +524,7 @@ export function PracticePage() {
         wordConfidences: confidences,
         wordTimings: timings,
       } = await whisper.transcribe(trimmed, referenceNormalized)
-      const verdicts = applyResult(text, resultChunks, confidences, timings, trimmed, true)
+      const verdicts = applyResult(text, resultChunks, confidences, timings, trimmed)
       if (meta) {
         const reached = verdicts.filter((v) => v.status !== 'unreached')
         const correct = reached.filter((v) => v.status === 'correct').length
@@ -529,7 +611,7 @@ export function PracticePage() {
           <div className="border-t border-line pt-5">
             <h2 className="title-ornament mb-3 flex items-center gap-2 font-display text-base font-bold text-accent">
               ما تقرأه الآن
-              {recording && !isFinal && (
+              {recording && (
                 <span className="flex items-center gap-1.5 text-xs font-semibold text-faint">
                   <span className="relative flex h-2 w-2">
                     <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-danger opacity-75" />
@@ -541,20 +623,43 @@ export function PracticePage() {
             </h2>
             <div className="space-y-3">
               {ayahRanges.map((r, idx) => {
-                const bucket = alignedByAyah[idx] ?? []
-                const reached = bucket.some((w) => w.hypIndex !== null)
-                const verdictsForAyah = (wordVerdicts ?? []).slice(r.start, r.end)
-                const extraWords = bucket.filter((w) => w.status === 'extra').map((w) => w.hypWord ?? '')
+                if (wordVerdicts) {
+                  const bucket = alignedByAyah[idx] ?? []
+                  const reached = bucket.some((w) => w.hypIndex !== null)
+                  const verdictsForAyah = wordVerdicts.slice(r.start, r.end)
+                  const extraWords = bucket.filter((w) => w.status === 'extra').map((w) => w.hypWord ?? '')
+                  return (
+                    <div key={r.ayahNumber} className="flex items-start gap-2">
+                      <div className="flex-1">
+                        {reached ? (
+                          <ComparedWords
+                            verdicts={verdictsForAyah}
+                            referenceWords={referenceWords}
+                            acousticAlerts={acousticAlerts}
+                            qalqalahAlerts={qalqalahAlerts}
+                            extraWords={extraWords}
+                          />
+                        ) : (
+                          <div className="rounded-xl border border-dashed border-line bg-line-soft/40 px-3 py-2.5 text-sm text-faint">
+                            ⋯ لم تصل إلى هذه الآية بعد
+                          </div>
+                        )}
+                      </div>
+                      <AyahBadge n={r.numberInSurah} />
+                    </div>
+                  )
+                }
+
+                // Still recording: no ASR result yet — reveal progress from the live RMS
+                // timing tracker alone (see LiveWords).
+                const reached = (liveSnapshot?.cursor ?? 0) > r.start
                 return (
                   <div key={r.ayahNumber} className="flex items-start gap-2">
                     <div className="flex-1">
                       {reached ? (
-                        <ComparedWords
-                          verdicts={verdictsForAyah}
-                          referenceWords={referenceWords}
-                          acousticAlerts={acousticAlerts}
-                          qalqalahAlerts={qalqalahAlerts}
-                          extraWords={extraWords}
+                        <LiveWords
+                          words={referenceWords.slice(r.start, r.end)}
+                          liveWords={(liveSnapshot?.words ?? []).slice(r.start, r.end)}
                         />
                       ) : (
                         <div className="rounded-xl border border-dashed border-line bg-line-soft/40 px-3 py-2.5 text-sm text-faint">
@@ -647,11 +752,6 @@ export function PracticePage() {
             <div className="text-sm font-semibold text-muted">
               {score.correct} صحيحة من {score.total}
             </div>
-            {!isFinal && (
-              <span className="rounded-full border border-gold/40 bg-accent-soft px-3 py-1 text-xs font-bold text-accent">
-                نتيجة مؤقتة أثناء القراءة
-              </span>
-            )}
             {!wordConfidences && (
               <span className="rounded-full bg-warn-soft px-3 py-1 text-xs font-bold text-warn">وضع احتياطي: مطابقة نصية فقط</span>
             )}

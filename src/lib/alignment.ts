@@ -1,5 +1,33 @@
 export type WordStatus = 'correct' | 'substituted' | 'missing' | 'extra'
 
+/**
+ * Bounded edit distance check: true when `a`/`b` differ by few enough character edits to be
+ * the same word mis-heard by the ASR (a swapped letter, a dropped/duplicated one), rather
+ * than a genuinely different word. Requiring exact equality here was too strict for the
+ * free-decode fallback path (used when the forced-decoding confidence pass isn't available)
+ * — a single near-miss letter would count a correctly-recited word as "substituted".
+ * Skipped for very short words (1 char), where any edit is too large a fraction of the word
+ * to be a safe near-miss call.
+ */
+function editClose(a: string, b: string): boolean {
+  if (a === b) return true
+  const n = a.length
+  const m = b.length
+  if (Math.min(n, m) < 2 || Math.abs(n - m) > 2) return false
+  const maxD = Math.max(1, Math.floor(Math.max(n, m) / 3))
+  const dp: number[] = Array.from({ length: m + 1 }, (_, j) => j)
+  for (let i = 1; i <= n; i++) {
+    let prev = dp[0]
+    dp[0] = i
+    for (let j = 1; j <= m; j++) {
+      const tmp = dp[j]
+      dp[j] = a[i - 1] === b[j - 1] ? prev : 1 + Math.min(prev, dp[j], dp[j - 1])
+      prev = tmp
+    }
+  }
+  return dp[m] <= maxD
+}
+
 export interface AlignedWord {
   status: WordStatus
   refIndex: number | null
@@ -22,7 +50,7 @@ export function alignWords(refWords: string[], hypWords: string[]): AlignedWord[
 
   for (let i = 1; i <= n; i++) {
     for (let j = 1; j <= m; j++) {
-      const match = refWords[i - 1] === hypWords[j - 1]
+      const match = editClose(refWords[i - 1], hypWords[j - 1])
       const sub = dp[i - 1][j - 1] + (match ? 0 : 2)
       const del = dp[i - 1][j] + 1
       const ins = dp[i][j - 1] + 1
@@ -35,7 +63,7 @@ export function alignWords(refWords: string[], hypWords: string[]): AlignedWord[
   let j = m
   while (i > 0 || j > 0) {
     if (i > 0 && j > 0) {
-      const match = refWords[i - 1] === hypWords[j - 1]
+      const match = editClose(refWords[i - 1], hypWords[j - 1])
       if (dp[i][j] === dp[i - 1][j - 1] + (match ? 0 : 2)) {
         result.push({
           status: match ? 'correct' : 'substituted',
