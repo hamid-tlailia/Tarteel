@@ -102,6 +102,14 @@ function median(values: number[]): number {
  * other way — everything scored 100%, real mistakes included. Evidence of error has to be
  * weighed, not merely outvoted by evidence of success.
  */
+/** The last ayah that received any recited word, or -1 if none did. */
+export function lastReachedAyahIndex(alignedByAyah: AlignedWord[][]): number {
+  for (let k = alignedByAyah.length - 1; k >= 0; k--) {
+    if (alignedByAyah[k].some((w) => w.hypIndex !== null)) return k
+  }
+  return -1
+}
+
 export function buildWordVerdicts(
   aligned: AlignedWord[],
   wordConfidences: number[] | null,
@@ -112,10 +120,15 @@ export function buildWordVerdicts(
   const freeByRef = new Map<number, AlignedWord>()
   for (const w of aligned) if (w.refIndex !== null) freeByRef.set(w.refIndex, w)
 
+  // An ayah is reached if it — or any ayah after it — received recited words. The second
+  // half matters: an ayah passed over while later ones were recited was *skipped*, and must
+  // be reported as such. Judging each ayah only by its own words called a skipped middle ayah
+  // "not reached yet", which hides exactly the fault a reciter needs to hear about, while the
+  // tail the reciter simply had not got to stays unreached, as it should.
+  const lastReachedAyah = lastReachedAyahIndex(alignedByAyah)
   const reachedAt = (i: number) => {
     const ayahIdx = ayahRanges.findIndex((r) => i >= r.start && i < r.end)
-    const bucket = ayahIdx >= 0 ? alignedByAyah[ayahIdx] : []
-    return bucket.some((w) => w.hypIndex !== null)
+    return ayahIdx >= 0 && ayahIdx <= lastReachedAyah
   }
 
   // Median confidence across everything actually attempted, so the relative test below

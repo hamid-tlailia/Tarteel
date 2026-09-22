@@ -41,30 +41,59 @@ export interface AlignedWord {
  * ASR hypothesis, on normalized words. Substitution cost 2, gap cost 1, so a
  * single-letter mismatch prefers "substituted" over "missing"+"extra".
  */
+/**
+ * Word costs for the alignment.
+ *
+ * A match is *rewarded* rather than merely free. With matches costing nothing, two very
+ * different readings of the same recitation could cost the same — and did: reciting only the
+ * basmala against al-Fātiḥah 1–3, "the basmala, then stopped" and "بسم from ayah 1, لله from
+ * ayah 2, الرحمن الرحيم from ayah 3" both matched four words and skipped six. The backtrace,
+ * walking from the end, took the latest matches — so the display revealed ayah 3 and marked
+ * ayah 2 missed, when the reciter had not reached either. A reward makes the reading that
+ * keeps matched words together cheaper than one that scatters them.
+ */
+const MATCH_COST = -2
+const MISMATCH_COST = 2
+const GAP_COST = 1
+
 export function alignWords(refWords: string[], hypWords: string[]): AlignedWord[] {
   const n = refWords.length
   const m = hypWords.length
   const dp: number[][] = Array.from({ length: n + 1 }, () => new Array(m + 1).fill(0))
-  for (let i = 0; i <= n; i++) dp[i][0] = i
-  for (let j = 0; j <= m; j++) dp[0][j] = j
+  for (let i = 0; i <= n; i++) dp[i][0] = i * GAP_COST
+  for (let j = 0; j <= m; j++) dp[0][j] = j * GAP_COST
+
+  const pairCost = (i: number, j: number) => (editClose(refWords[i - 1], hypWords[j - 1]) ? MATCH_COST : MISMATCH_COST)
 
   for (let i = 1; i <= n; i++) {
     for (let j = 1; j <= m; j++) {
-      const match = editClose(refWords[i - 1], hypWords[j - 1])
-      const sub = dp[i - 1][j - 1] + (match ? 0 : 2)
-      const del = dp[i - 1][j] + 1
-      const ins = dp[i][j - 1] + 1
+      const sub = dp[i - 1][j - 1] + pairCost(i, j)
+      const del = dp[i - 1][j] + GAP_COST
+      const ins = dp[i][j - 1] + GAP_COST
       dp[i][j] = Math.min(sub, del, ins)
     }
   }
 
+  // The reciter recites a *prefix* of the passage and may stop anywhere, so the reference
+  // words after the last one they reached are not skipped — they are simply not yet reached,
+  // and must cost nothing. The alignment therefore ends at whichever reference position
+  // explains the whole recitation most cheaply, the earliest on a tie; everything after it is
+  // reported as missing with no hypothesis word, which is what marks those ayahs unreached
+  // rather than failed.
+  let endRow = 0
+  for (let i = 1; i <= n; i++) if (dp[i][m] < dp[endRow][m]) endRow = i
+
   const result: AlignedWord[] = []
-  let i = n
+  for (let k = n; k > endRow; k--) {
+    result.push({ status: 'missing', refIndex: k - 1, hypIndex: null, refWord: refWords[k - 1], hypWord: null })
+  }
+
+  let i = endRow
   let j = m
   while (i > 0 || j > 0) {
     if (i > 0 && j > 0) {
       const match = editClose(refWords[i - 1], hypWords[j - 1])
-      if (dp[i][j] === dp[i - 1][j - 1] + (match ? 0 : 2)) {
+      if (dp[i][j] === dp[i - 1][j - 1] + (match ? MATCH_COST : MISMATCH_COST)) {
         result.push({
           status: match ? 'correct' : 'substituted',
           refIndex: i - 1,
@@ -77,7 +106,7 @@ export function alignWords(refWords: string[], hypWords: string[]): AlignedWord[
         continue
       }
     }
-    if (i > 0 && dp[i][j] === dp[i - 1][j] + 1) {
+    if (i > 0 && dp[i][j] === dp[i - 1][j] + GAP_COST) {
       result.push({ status: 'missing', refIndex: i - 1, hypIndex: null, refWord: refWords[i - 1], hypWord: null })
       i--
       continue

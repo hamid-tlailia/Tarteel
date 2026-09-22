@@ -29,6 +29,7 @@ import { detectGhunnahNasalityAlerts, measureWordTimbre, type NasalityAlert } fr
 import {
   bucketByAyah,
   buildWordVerdicts,
+  lastReachedAyahIndex,
   isConfidenceUsable,
   PASSAGE_MATCH_FLOOR,
   type AyahRange,
@@ -1115,7 +1116,9 @@ export function PracticePage() {
               {ayahRanges.map((r, idx) => {
                 if (wordVerdicts) {
                   const bucket = alignedByAyah[idx] ?? []
-                  const reached = bucket.some((w) => w.hypIndex !== null)
+                  // Same rule as the verdicts: an ayah skipped before later ones were
+                  // recited is shown, with its words marked missing, not hidden as unreached.
+                  const reached = idx <= lastReachedAyahIndex(alignedByAyah)
                   const verdictsForAyah = wordVerdicts.slice(r.start, r.end)
                   const extraWords = bucket.filter((w) => w.status === 'extra').map((w) => w.hypWord ?? '')
                   return (
