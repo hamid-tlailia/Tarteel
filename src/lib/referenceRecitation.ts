@@ -1,6 +1,7 @@
 import type { Ayah } from '../types/quran'
 import { segmentsToWords } from './tajweed'
 import type { ReferenceTiming } from './referenceTiming'
+import { reciterOf } from './reciters'
 
 /**
  * Turning an accredited reciter's published recording into the timings the checks compare
@@ -36,10 +37,25 @@ export interface BuildReferenceOptions {
   signal?: AbortSignal
 }
 
-const AUDIO_CDN = 'https://cdn.islamic.network/quran/audio/128'
+/**
+ * everyayah.com, not the CDN the app plays from.
+ *
+ * Reading a recording's samples is a cross-origin fetch, and the Islamic Network CDN sends
+ * no Access-Control-Allow-Origin header at all — so every one of these fetches failed in the
+ * browser and the app reported that no reference was available, for every reciter, always.
+ * everyayah serves the same recitations with `Access-Control-Allow-Origin: *`. Playback is
+ * unaffected: an <audio> element needs no such permission and still uses the original CDN.
+ *
+ * Its paths are surah and ayah, each padded to three digits, rather than a running ayah
+ * number.
+ */
+const ANALYSIS_CDN = 'https://everyayah.com/data'
 
-function audioUrlFor(reciterId: string, ayah: Ayah): string {
-  return `${AUDIO_CDN}/${reciterId}/${ayah.number}.mp3`
+function analysisUrlFor(reciterId: string, ayah: Ayah): string | null {
+  const folder = reciterOf(reciterId).analysisFolder
+  if (!folder) return null
+  const pad = (n: number) => String(n).padStart(3, '0')
+  return `${ANALYSIS_CDN}/${folder}/${pad(ayah.surah)}${pad(ayah.numberInSurah)}.mp3`
 }
 
 async function defaultFetchAudio(url: string): Promise<Blob> {
@@ -70,8 +86,10 @@ export async function buildReferenceTiming({
 
     let timings = cache.get(key)
     if (timings === undefined) {
+      const url = analysisUrlFor(reciterId, ayah)
       try {
-        const blob = await fetchAudio(audioUrlFor(reciterId, ayah))
+        if (!url) throw new Error('this reciter has no source that permits reading its samples')
+        const blob = await fetchAudio(url)
         if (signal?.aborted) return null
         const pcm = await decode(blob)
         timings = await align(pcm, words.map((w) => w.word))

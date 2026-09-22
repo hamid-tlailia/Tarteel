@@ -619,6 +619,10 @@ export function PracticePage() {
     return { correct, total, accuracy: total === 0 ? 0 : Math.round((correct / total) * 100) }
   }, [wordVerdicts])
 
+  /** Rulings broken, as opposed to words misread — the two are counted separately because
+   * they are different failures, and the word score cannot see the first at all. */
+  const tajweedFaultCount = acousticAlerts.length + qalqalahAlerts.length + nasalityAlerts.length
+
   const coachTips = useMemo(() => {
     if (!wordVerdicts) return []
     return buildCoachTips({
@@ -1269,6 +1273,14 @@ export function PracticePage() {
               <div className="text-sm font-semibold text-muted">
                 {score.correct} صحيحة من {score.total}
               </div>
+              {/* The percentage counts words *said* correctly, which is not the same as
+                  recited correctly: «الٓمٓ» read with no madd at all is the right word and a
+                  broken ruling. Reporting 100% with nothing beside it hid that entirely. */}
+              {tajweedFaultCount > 0 && (
+                <span className="rounded-full bg-warn-soft px-3 py-1 text-xs font-bold text-warn">
+                  {tajweedFaultCount} {tajweedFaultCount === 1 ? 'مخالفة' : 'مخالفات'} في التجويد
+                </span>
+              )}
               {!isConfidenceUsable(wordConfidences) && (
                 <span className="rounded-full bg-warn-soft px-3 py-1 text-xs font-bold text-warn">
                   وضع احتياطي: مطابقة نصية فقط

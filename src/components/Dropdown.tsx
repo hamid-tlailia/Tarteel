@@ -80,12 +80,21 @@ export function Dropdown<T extends string | number>({
       if (listRef.current?.contains(target) || triggerRef.current?.contains(target)) return
       close()
     }
-    window.addEventListener('scroll', close, true)
+    // Capture phase, but not for scrolls that happen *inside* the list. The point of
+    // closing on scroll is that the panel is positioned from a measured rect and would be
+    // left behind if the page moved under it — the list's own scrolling moves nothing.
+    // Listening in capture without that check made a long list impossible to scroll at all:
+    // the first touch-drag closed it. The surah list is 114 items long.
+    const onScroll = (e: Event) => {
+      if (listRef.current && e.target instanceof Node && listRef.current.contains(e.target)) return
+      close()
+    }
+    window.addEventListener('scroll', onScroll, true)
     window.addEventListener('resize', close)
     window.addEventListener('keydown', onKey)
     document.addEventListener('pointerdown', onDocPointer)
     return () => {
-      window.removeEventListener('scroll', close, true)
+      window.removeEventListener('scroll', onScroll, true)
       window.removeEventListener('resize', close)
       window.removeEventListener('keydown', onKey)
       document.removeEventListener('pointerdown', onDocPointer)
@@ -123,8 +132,8 @@ export function Dropdown<T extends string | number>({
             id={listId}
             role="listbox"
             dir="rtl"
-            style={style}
-            className="card-lux max-h-[min(22rem,60vh)] overflow-y-auto rounded-2xl! p-1.5 shadow-[var(--shadow-lift)]"
+            style={{ ...style, WebkitOverflowScrolling: 'touch' }}
+            className="card-lux max-h-[min(22rem,60vh)] overflow-y-auto overscroll-contain rounded-2xl! p-1.5 shadow-[var(--shadow-lift)]"
           >
             {options.map((option) => {
               const active = option.value === value

@@ -105,6 +105,12 @@ function judgeHold(
    * When present it replaces the theoretical duration below: a real performance of the
    * ruling is better evidence than any constant reasoned from the books. */
   reference: ReferenceExpectation | null,
+  /**
+   * True when the passage offered no other word to establish this reciter's pace, so the
+   * only trustworthy evidence is the physical floor — which is pace-independent by
+   * construction and therefore cannot produce a false accusation.
+   */
+  floorsOnly = false,
 ): { severity: 'mild' | 'severe'; minimumMs: number } | null {
   const theory = expectedDurationBreakdown(refWord, paceId)
   const expected = reference
@@ -129,7 +135,13 @@ function judgeHold(
   const floorMs = fastest.baseMs + fastest.holdMs
   const impossible = fastest.holdMs > 0 && measuredMs < floorMs - TIMING_TOLERANCE_MS
 
-  if (performed >= HOLD_FULFILLED_ENOUGH && !impossible) return null
+  // With no pace evidence, `performed` is measured against a tempo nobody confirmed, so it
+  // is not allowed to accuse on its own — only the floor may.
+  if (floorsOnly) {
+    if (!impossible) return null
+  } else if (performed >= HOLD_FULFILLED_ENOUGH && !impossible) {
+    return null
+  }
 
   const shortfall = impossible
     ? Math.min(performed, (measuredMs - fastest.baseMs) / Math.max(1, fastest.holdMs))
@@ -219,9 +231,22 @@ export function detectMaddDurationAlertsForced(
 
     const slot = ratioIndex.get(i)
     const tempoScale = slot === undefined ? null : paceExcluding(ratios, slot)
-    if (tempoScale === null) return
 
-    const judged = judgeHold(refWord, held.kind, measuredMs, tempoScale, paceId, referenced?.[i] ?? null)
+    // A passage of one word has no *other* word to set the pace — and returning nothing
+    // there meant the check simply did not run. Reciting «الٓمٓ» on its own with no madd at
+    // all was reported as a flawless 100%, though six ḥarakāt of madd lāzim were owed and
+    // roughly none were given. The physical floors were built for exactly this: they ask
+    // whether the hold could have fitted at all, at the fastest anyone recites, and need no
+    // pace to do it.
+    const judged = judgeHold(
+      refWord,
+      held.kind,
+      measuredMs,
+      tempoScale ?? 1,
+      paceId,
+      referenced?.[i] ?? null,
+      tempoScale === null,
+    )
     if (!judged) return
 
     alerts.push({
