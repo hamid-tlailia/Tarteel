@@ -1,4 +1,4 @@
-import { parseTajweedMarkup } from '../lib/tajweed'
+import { applyDerivedRuleSpans, parseTajweedMarkup } from '../lib/tajweed'
 import type { Ayah, SurahMeta } from '../types/quran'
 
 const BASE = 'https://api.alquran.cloud/v1'
@@ -38,7 +38,7 @@ export async function fetchSurahAyahs(surahNumber: number): Promise<Ayah[]> {
     numberInSurah: a.numberInSurah,
     surah: surahNumber,
     text: a.text,
-    segments: parseTajweedMarkup(a.text),
+    segments: applyDerivedRuleSpans(parseTajweedMarkup(a.text)),
     audioUrl: `${AUDIO_CDN}/${RECITER}/${a.number}.mp3`,
   }))
 

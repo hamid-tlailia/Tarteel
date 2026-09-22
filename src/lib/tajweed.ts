@@ -1,5 +1,5 @@
 import type { TajweedRuleId, TajweedSegment } from '../types/quran'
-import { deriveUthmaniRules } from './uthmaniRules'
+import { deriveUthmaniRules, deriveUthmaniRuleSpans } from './uthmaniRules'
 
 /**
  * api.alquran.cloud `quran-tajweed` edition single-letter rule codes → rule ids.
@@ -50,6 +50,65 @@ export function parseTajweedMarkup(raw: string): TajweedSegment[] {
 /** Plain text (no markup) reconstructed from tajweed markup, for search/comparison. */
 export function stripTajweedMarkup(raw: string): string {
   return raw.replace(MARKUP_RE, '$2')
+}
+
+/**
+ * Colours the derived rules at their own letters, alongside the ones the edition marks.
+ *
+ * The edition's markup wins wherever it says anything: it is authoritative for the letters
+ * it covers, and a derived iẓhār must never overwrite a marked ikhfāʾ drawn from the same
+ * nūn. Derived rules fill only what it leaves blank. Working a character at a time and
+ * regrouping afterwards keeps this independent of how the markup happened to be split.
+ */
+export function applyDerivedRuleSpans(segments: TajweedSegment[]): TajweedSegment[] {
+  const chars: string[] = []
+  const rules: (TajweedRuleId | undefined)[] = []
+  for (const seg of segments) {
+    for (const ch of seg.text) {
+      chars.push(ch)
+      rules.push(seg.rule)
+    }
+  }
+  if (chars.length === 0) return segments
+
+  // Word boundaries in the flattened text, so each word can be derived with its neighbours.
+  const words: { text: string; start: number }[] = []
+  let current = ''
+  let start = 0
+  chars.forEach((ch, i) => {
+    if (/\s/.test(ch)) {
+      if (current) words.push({ text: current, start })
+      current = ''
+      start = i + 1
+    } else {
+      if (!current) start = i
+      current += ch
+    }
+  })
+  if (current) words.push({ text: current, start })
+
+  words.forEach((w, i) => {
+    const spans = deriveUthmaniRuleSpans(
+      w.text,
+      words[i + 1]?.text ?? '',
+      words[i - 1]?.text ?? '',
+      i === words.length - 1,
+    )
+    for (const span of spans) {
+      for (let k = span.start; k < span.end; k++) {
+        const at = w.start + k
+        if (at < rules.length && rules[at] === undefined) rules[at] = span.rule
+      }
+    }
+  })
+
+  const merged: TajweedSegment[] = []
+  for (let i = 0; i < chars.length; i++) {
+    const previous = merged[merged.length - 1]
+    if (previous && previous.rule === rules[i]) previous.text += chars[i]
+    else merged.push(rules[i] ? { text: chars[i], rule: rules[i] } : { text: chars[i] })
+  }
+  return merged
 }
 
 export interface TajweedRuleInfo {

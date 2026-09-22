@@ -57,6 +57,9 @@ const HAMZA_FORMS = new Set(['ء', 'أ', 'إ', 'ؤ', 'ئ'])
 
 interface Letter {
   ch: string
+  /** Where this letter and its marks sit in the original word string. */
+  from: number
+  to: number
   /** The single vowel on this letter: fatḥa, kasra, ḍamma, sukūn, a tanwīn, or '' if bare. */
   vowel: string
   shadda: boolean
@@ -76,22 +79,28 @@ interface Letter {
 export function tokenizeUthmani(word: string): Letter[] {
   const letters: Letter[] = []
   const last = () => letters[letters.length - 1]
+  let offset = 0
 
   for (const ch of word) {
+    const at = offset
+    offset += ch.length
     if (ch === TATWEEL) continue
 
+    const blank = { vowel: '', shadda: false, daggerAlef: false, silahMark: false, iqlabMark: false }
     // A base letter: anything in the Arabic letter block that is not a combining mark.
     if (ch >= 'ء' && ch <= 'ي') {
-      letters.push({ ch, vowel: '', shadda: false, daggerAlef: false, silahMark: false, iqlabMark: false })
+      letters.push({ ch, from: at, to: at + ch.length, ...blank })
       continue
     }
     if (ch === ALEF_WASLA) {
-      letters.push({ ch: 'ا', vowel: '', shadda: false, daggerAlef: false, silahMark: false, iqlabMark: false })
+      letters.push({ ch: 'ا', from: at, to: at + ch.length, ...blank })
       continue
     }
 
     const target = last()
     if (!target) continue
+    // A mark belongs to the letter it sits on, so that letter's span grows to cover it.
+    target.to = at + ch.length
 
     if (ch === SHADDA) target.shadda = true
     else if (ch === DAGGER_ALEF) target.daggerAlef = true
@@ -157,6 +166,20 @@ function precedingVowel(letters: Letter[], i: number): string | null {
   return null
 }
 
+/** A derived rule together with the letters it lands on, so the text can be coloured at
+ * those letters exactly as the edition's own markup colours the ones it marks. */
+interface RuleHit {
+  rule: TajweedRuleId
+  letters: number[]
+}
+
+/** A derived rule and the character range of the word it covers. */
+export interface DerivedRuleSpan {
+  rule: TajweedRuleId
+  start: number
+  end: number
+}
+
 /* ── The rulings ─────────────────────────────────────────────────────────────────────── */
 
 /**
@@ -168,7 +191,7 @@ function precedingVowel(letters: Letter[], i: number): string | null {
  * fatḥa because it was moved to avoid two sukūns meeting once the joining hamza dropped; it
  * is a moving letter, outside the rulings of nūn sākinah entirely, and the script says so.
  */
-function izharHalqi(letters: Letter[], nextWord: string): TajweedRuleId | null {
+function izharHalqi(letters: Letter[], nextWord: string): RuleHit | null {
   const next = nextWord ? firstLetterOf(nextWord) : undefined
   const followsInside = (i: number) => letters[i + 1]
 
@@ -184,7 +207,7 @@ function izharHalqi(letters: Letter[], nextWord: string): TajweedRuleId | null {
     // Iqlāb is marked in the script itself and is a different ruling.
     if (l.iqlabMark) continue
 
-    if (THROAT_LETTERS.has(following.ch)) return 'izhar_halqi'
+    if (THROAT_LETTERS.has(following.ch)) return { rule: 'izhar_halqi', letters: [i] }
   }
   return null
 }
@@ -194,7 +217,7 @@ function izharHalqi(letters: Letter[], nextWord: string): TajweedRuleId | null {
  * plainly from the lips. The other two cases (ikhfāʾ shafawī before bāʾ, idghām before
  * mīm) are marked by the edition; this one is not.
  */
-function izharShafawi(letters: Letter[], nextWord: string): TajweedRuleId | null {
+function izharShafawi(letters: Letter[], nextWord: string): RuleHit | null {
   const next = nextWord ? firstLetterOf(nextWord) : undefined
 
   for (let i = 0; i < letters.length; i++) {
@@ -204,18 +227,18 @@ function izharShafawi(letters: Letter[], nextWord: string): TajweedRuleId | null
     const following = isFinal ? next : letters[i + 1]
     if (!following) continue
     if (following.ch === 'ب' || following.ch === 'م') continue
-    return 'izhar_shafawi'
+    return { rule: 'izhar_shafawi', letters: [i] }
   }
   return null
 }
 
 /** Madd al-badal: a hamza followed, in the same word, by a letter of prolongation. */
-function maddBadal(letters: Letter[]): TajweedRuleId | null {
+function maddBadal(letters: Letter[]): RuleHit | null {
   for (let i = 1; i < letters.length; i++) {
     if (!isMaddLetter(letters, i)) continue
-    if (isHamza(letters[i - 1])) return 'madda_badal'
+    if (isHamza(letters[i - 1])) return { rule: 'madda_badal', letters: [i] }
     // A superscript alef sits on the hamza itself rather than after it (ءَٰ).
-    if (letters[i].daggerAlef && isHamza(letters[i])) return 'madda_badal'
+    if (letters[i].daggerAlef && isHamza(letters[i])) return { rule: 'madda_badal', letters: [i] }
   }
   return null
 }
@@ -225,11 +248,12 @@ function maddBadal(letters: Letter[]): TajweedRuleId | null {
  * this is read from the script rather than inferred: greater ṣilah when a cutting hamza
  * begins the next word, lesser otherwise.
  */
-function maddSilah(letters: Letter[], nextWord: string): TajweedRuleId | null {
-  const marked = letters.some((l) => l.ch === 'ه' && l.silahMark)
-  if (!marked) return null
+function maddSilah(letters: Letter[], nextWord: string): RuleHit | null {
+  const at = letters.findIndex((l) => l.ch === 'ه' && l.silahMark)
+  if (at < 0) return null
   const next = nextWord ? firstLetterOf(nextWord) : undefined
-  return next && isHamza(next) ? 'madda_sila_kubra' : 'madda_sila_sughra'
+  const rule: TajweedRuleId = next && isHamza(next) ? 'madda_sila_kubra' : 'madda_sila_sughra'
+  return { rule, letters: [at] }
 }
 
 /**
@@ -238,7 +262,7 @@ function maddSilah(letters: Letter[], nextWord: string): TajweedRuleId | null {
  * letter after it is voiced and there is no madd. «يَوْمَ» is the standard counter-example:
  * the letter before the wāw is a fatḥa on a yāʾ, which the primers exclude.
  */
-function maddLeen(letters: Letter[], stopsHere: boolean): TajweedRuleId | null {
+function maddLeen(letters: Letter[], stopsHere: boolean): RuleHit | null {
   if (!stopsHere || letters.length < 3) return null
   const last = letters[letters.length - 1]
   const leen = letters[letters.length - 2]
@@ -249,7 +273,7 @@ function maddLeen(letters: Letter[], stopsHere: boolean): TajweedRuleId | null {
   if (before.vowel !== FATHA) return null
   if (before.ch === 'و' || before.ch === 'ي') return null
   if (!SHORT_VOWELS.has(last.vowel) && !isTanween(last)) return null
-  return 'madda_leen'
+  return { rule: 'madda_leen', letters: [letters.length - 2] }
 }
 
 /**
@@ -257,24 +281,24 @@ function maddLeen(letters: Letter[], stopsHere: boolean): TajweedRuleId | null {
  * because the reciter stopped there. Joined onward, that letter is voiced and the madd is
  * merely natural.
  */
-function maddArid(letters: Letter[], stopsHere: boolean): TajweedRuleId | null {
+function maddArid(letters: Letter[], stopsHere: boolean): RuleHit | null {
   if (!stopsHere || letters.length < 2) return null
   const last = letters[letters.length - 1]
   if (!SHORT_VOWELS.has(last.vowel) && !isTanween(last)) return null
   if (isTanween(last) && last.vowel === TANWEEN_FATH) return null // that is ʿiwaḍ, below
-  return isMaddLetter(letters, letters.length - 2) ? 'madda_arid' : null
+  return isMaddLetter(letters, letters.length - 2) ? { rule: 'madda_arid', letters: [letters.length - 2] } : null
 }
 
 /**
  * Madd al-ʿiwaḍ: stopping on a tanwīn fatḥ, which becomes an alef of two ḥarakāt standing
  * in for it. Stopping on a tāʾ marbūṭah is excluded — it becomes a silent hāʾ, not a madd.
  */
-function maddIwad(letters: Letter[], stopsHere: boolean): TajweedRuleId | null {
+function maddIwad(letters: Letter[], stopsHere: boolean): RuleHit | null {
   if (!stopsHere) return null
   for (let i = letters.length - 1; i >= Math.max(0, letters.length - 2); i--) {
     if (letters[i].vowel !== TANWEEN_FATH) continue
     if (letters[i].ch === 'ة') return null
-    return 'madda_iwad'
+    return { rule: 'madda_iwad', letters: [i] }
   }
   return null
 }
@@ -283,7 +307,7 @@ function maddIwad(letters: Letter[], stopsHere: boolean): TajweedRuleId | null {
  * The rāʾ, heavy or light. Where the causes of heaviness and lightness meet, Ḥafṣ permits
  * both, and saying so is more honest than forcing a single answer.
  */
-function raRule(letters: Letter[], stopsHere: boolean): TajweedRuleId | null {
+function raRule(letters: Letter[], stopsHere: boolean): RuleHit | null {
   for (let i = 0; i < letters.length; i++) {
     const r = letters[i]
     if (r.ch !== 'ر') continue
@@ -294,26 +318,26 @@ function raRule(letters: Letter[], stopsHere: boolean): TajweedRuleId | null {
     // moving, heavy rāʾ, but stopped on it becomes sākinah after a sākin yāʾ, and light.
     const stopped = stopsHere && i === letters.length - 1
     if (!stopped) {
-      if (SHORT_VOWELS.has(r.vowel)) return r.vowel === KASRA ? 'ra_muraqqaqa' : 'ra_mufakhkhama'
-      if (isTanween(r)) return r.vowel === TANWEEN_KASR ? 'ra_muraqqaqa' : 'ra_mufakhkhama'
+      if (SHORT_VOWELS.has(r.vowel)) return { rule: r.vowel === KASRA ? 'ra_muraqqaqa' : 'ra_mufakhkhama', letters: [i] }
+      if (isTanween(r)) return { rule: r.vowel === TANWEEN_KASR ? 'ra_muraqqaqa' : 'ra_mufakhkhama', letters: [i] }
     }
 
     if ((stopped || isSakin(r)) && prev) {
       // After a sākin yāʾ, the yāʾ itself lightens it.
-      if (prev.ch === 'ي' && isSakin(prev)) return 'ra_muraqqaqa'
+      if (prev.ch === 'ي' && isSakin(prev)) return { rule: 'ra_muraqqaqa', letters: [i] }
       const kasraBefore = prev.vowel === KASRA || (isSakin(prev) && letters[i - 2]?.vowel === KASRA)
       if (kasraBefore) {
         // A heavy letter after it, itself carrying a kasra, pulls both ways (فِرْقٍ).
         if (next && ISTILA_LETTERS.has(next.ch) && (next.vowel === KASRA || next.vowel === TANWEEN_KASR)) {
-          return 'ra_wajhan'
+          return { rule: 'ra_wajhan', letters: [i] }
         }
         // A heavy letter standing between the kasra and the rāʾ likewise (مِصْرَ).
-        if (ISTILA_LETTERS.has(prev.ch) && isSakin(prev)) return 'ra_wajhan'
+        if (ISTILA_LETTERS.has(prev.ch) && isSakin(prev)) return { rule: 'ra_wajhan', letters: [i] }
         // A kasra that only appeared to carry a joining hamza does not lighten it.
-        if (prev.ch === 'ا' && prev.vowel === KASRA) return 'ra_mufakhkhama'
-        return 'ra_muraqqaqa'
+        if (prev.ch === 'ا' && prev.vowel === KASRA) return { rule: 'ra_mufakhkhama', letters: [i] }
+        return { rule: 'ra_muraqqaqa', letters: [i] }
       }
-      return 'ra_mufakhkhama'
+      return { rule: 'ra_mufakhkhama', letters: [i] }
     }
   }
   return null
@@ -338,7 +362,7 @@ function allahStart(letters: Letter[]): number {
  * The lām of the divine name: heavy after a fatḥa or ḍamma, light after a kasra. The vowel
  * that decides it may sit on a letter attached in front of the name, or end the word before.
  */
-function lamJalalah(letters: Letter[], prevWord: string): TajweedRuleId | null {
+function lamJalalah(letters: Letter[], prevWord: string): RuleHit | null {
   const start = allahStart(letters)
   if (start < 0) return null
 
@@ -350,13 +374,18 @@ function lamJalalah(letters: Letter[], prevWord: string): TajweedRuleId | null {
     deciding = precedingVowel(prevLetters, prevLetters.length)
   }
 
-  if (deciding === KASRA) return 'lam_jalalah_muraqqaqa'
-  return 'lam_jalalah_mufakhkhama'
+  // Colour the doubled lam of the name itself rather than the whole word.
+  const lamAt = letters.findIndex((l, i) => i >= start && l.ch === 'ل' && l.shadda)
+  return {
+    rule: deciding === KASRA ? 'lam_jalalah_muraqqaqa' : 'lam_jalalah_mufakhkhama',
+    letters: [lamAt >= 0 ? lamAt : start],
+  }
 }
 
 /** Any of the seven heavy letters present in the word. */
-function istila(letters: Letter[]): TajweedRuleId | null {
-  return letters.some((l) => ISTILA_LETTERS.has(l.ch)) ? 'istila' : null
+function istila(letters: Letter[]): RuleHit | null {
+  const hits = letters.map((l, i) => (ISTILA_LETTERS.has(l.ch) ? i : -1)).filter((i) => i >= 0)
+  return hits.length > 0 ? { rule: 'istila', letters: hits } : null
 }
 
 /**
@@ -368,12 +397,40 @@ function istila(letters: Letter[]): TajweedRuleId | null {
  * @param stopsHere whether the reciter stops on this word — the madds of līn, ʿāriḍ and
  *                  ʿiwaḍ exist only at a stop, and an ayah's end is a stop
  */
-export function deriveUthmaniRules(
+export function deriveUthmaniRules(word: string, nextWord = '', prevWord = '', stopsHere = false): TajweedRuleId[] {
+  const seen = new Set<TajweedRuleId>()
+  const rules: TajweedRuleId[] = []
+  for (const hit of deriveRuleHits(word, nextWord, prevWord, stopsHere)) {
+    if (!seen.has(hit.rule)) {
+      seen.add(hit.rule)
+      rules.push(hit.rule)
+    }
+  }
+  return rules
+}
+
+/**
+ * The same rules, each with the character range of the word it covers — so a derived rule
+ * can colour its own letters, exactly as the edition's markup colours the ones it marks.
+ */
+export function deriveUthmaniRuleSpans(
   word: string,
   nextWord = '',
   prevWord = '',
   stopsHere = false,
-): TajweedRuleId[] {
+): DerivedRuleSpan[] {
+  const letters = tokenizeUthmani(word)
+  const spans: DerivedRuleSpan[] = []
+  for (const hit of deriveRuleHits(word, nextWord, prevWord, stopsHere)) {
+    for (const index of hit.letters) {
+      const letter = letters[index]
+      if (letter) spans.push({ rule: hit.rule, start: letter.from, end: letter.to })
+    }
+  }
+  return spans
+}
+
+function deriveRuleHits(word: string, nextWord: string, prevWord: string, stopsHere: boolean): RuleHit[] {
   const letters = tokenizeUthmani(word)
   if (letters.length === 0) return []
 
@@ -390,13 +447,5 @@ export function deriveUthmaniRules(
     istila(letters),
   ]
 
-  const seen = new Set<TajweedRuleId>()
-  const rules: TajweedRuleId[] = []
-  for (const rule of found) {
-    if (rule && !seen.has(rule)) {
-      seen.add(rule)
-      rules.push(rule)
-    }
-  }
-  return rules
+  return found.filter((hit): hit is RuleHit => hit !== null)
 }
