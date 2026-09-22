@@ -36,7 +36,7 @@ const MIN_SPEECH_SAMPLES = 8000 // ~0.5s at 16kHz, after silence trimming
 // Tolerance band for the live timing tracker (0=very lenient, 1=strict) — see tauTolerance
 // in liveTracker.ts. Not user-configurable yet; a reasonable middle ground for a first pass.
 const LIVE_TAU = 0.45
-const LIVE_SNAPSHOT_INTERVAL_MS = 120
+const LIVE_SNAPSHOT_INTERVAL_MS = 80
 
 function hypWordsFromResult(text: string, chunks: TimedChunk[]) {
   if (chunks.length > 0) {
@@ -168,7 +168,16 @@ function ComparedWords({
  * (short/long) or red (nothing heard), and anything not reached yet stays faint. Word
  * *correctness* (right/wrong text) only becomes available once, from the single Whisper
  * pass that runs after the reciter stops — see ComparedWords for that final rendering. */
-function LiveWords({ words, liveWords }: { words: WordWithRules[]; liveWords: LiveWordResult[] }) {
+function LiveWords({
+  words,
+  liveWords,
+  holdProgress,
+}: {
+  words: WordWithRules[]
+  liveWords: LiveWordResult[]
+  /** 0–1+ progress of the word being recited right now toward its expected duration. */
+  holdProgress: number | null
+}) {
   return (
     <div className="flex flex-wrap gap-x-1.5 gap-y-2 font-quran text-2xl" dir="rtl">
       {words.map((w, i) => {
@@ -184,9 +193,27 @@ function LiveWords({ words, liveWords }: { words: WordWithRules[]; liveWords: Li
           )
         }
         if (live.status === 'current') {
+          // While the word is still being held, a bar fills toward the duration its rules
+          // call for — so a reciter can see how much of a madd is still owed rather than
+          // only being told afterwards that it was cut short.
+          const filled = holdProgress === null ? 0 : Math.min(1, holdProgress)
+          const complete = (holdProgress ?? 0) >= 1
           return (
-            <span key={i} className="animate-pulse rounded-lg bg-accent-soft px-1.5 py-0.5 text-accent ring-1 ring-gold/60">
-              {w.word}
+            <span key={i} className="relative inline-block px-1.5 pb-1.5 pt-0.5">
+              <span
+                className={clsx(
+                  'rounded-lg px-1 ring-1 transition-colors',
+                  complete ? 'bg-ok/15 text-ok ring-ok/50' : 'bg-accent-soft text-accent ring-gold/60',
+                )}
+              >
+                {w.word}
+              </span>
+              <span aria-hidden className="absolute inset-x-1 bottom-0 h-1 overflow-hidden rounded-full bg-line-soft">
+                <span
+                  className={clsx('block h-full rounded-full transition-[width] duration-100', complete ? 'bg-ok' : 'bg-gold')}
+                  style={{ width: `${filled * 100}%` }}
+                />
+              </span>
             </span>
           )
         }
@@ -218,6 +245,83 @@ function LiveWords({ words, liveWords }: { words: WordWithRules[]; liveWords: Li
   )
 }
 
+function formatElapsed(ms: number): string {
+  const total = Math.floor(ms / 1000)
+  return `${String(Math.floor(total / 60)).padStart(2, '0')}:${String(total % 60).padStart(2, '0')}`
+}
+
+/**
+ * The recorder control. The ring around the button tracks the microphone's actual level, so
+ * a reciter can see they are being heard before committing to a whole passage — the previous
+ * plain button gave no indication of that at all, and a recording that turned out to be too
+ * quiet was only discovered after the analysis had run.
+ */
+function Recorder({
+  recording,
+  busy,
+  micLevel,
+  elapsedMs,
+  onStart,
+  onStop,
+}: {
+  recording: boolean
+  busy: boolean
+  micLevel: number
+  elapsedMs: number
+  onStart: () => void
+  onStop: () => void
+}) {
+  const level = Math.min(1, Math.max(0, micLevel))
+  const quiet = recording && elapsedMs > 1500 && level < 0.08
+
+  return (
+    <div className="flex flex-col items-center gap-3 py-2">
+      <div className="relative flex h-28 w-28 items-center justify-center">
+        {recording && (
+          <>
+            <span
+              aria-hidden
+              className="absolute rounded-full bg-danger/20 transition-all duration-100"
+              style={{ width: `${72 + level * 44}px`, height: `${72 + level * 44}px` }}
+            />
+            <span aria-hidden className="absolute h-[84px] w-[84px] animate-ping rounded-full bg-danger/15" />
+          </>
+        )}
+        <button
+          onClick={recording ? onStop : onStart}
+          disabled={busy}
+          aria-label={recording ? 'إيقاف التسجيل وتحليل التلاوة' : 'ابدأ التسجيل'}
+          className={clsx(
+            'relative flex h-[72px] w-[72px] items-center justify-center rounded-full text-white shadow-lg transition-transform active:scale-95 disabled:opacity-50',
+            recording ? 'bg-danger' : 'bg-accent',
+          )}
+          style={{ boxShadow: recording ? '0 8px 28px -8px var(--c-danger)' : '0 8px 28px -8px var(--c-accent)' }}
+        >
+          {recording ? <StopIcon className="h-7 w-7" /> : <PracticeIcon className="h-8 w-8" />}
+        </button>
+      </div>
+
+      <div className="flex min-h-[1.5rem] flex-col items-center gap-1">
+        {recording ? (
+          <>
+            <span className="font-mono text-lg font-bold tabular-nums text-ink">{formatElapsed(elapsedMs)}</span>
+            <span className={clsx('text-xs font-semibold', quiet ? 'text-warn' : 'text-faint')}>
+              {quiet ? 'الصوت خافت — اقترب من الميكروفون' : 'يستمع… اقرأ الآيات بترتيل'}
+            </span>
+          </>
+        ) : busy ? (
+          <span className="flex items-center gap-2 text-sm font-semibold text-muted">
+            <span className="h-4 w-4 animate-spin rounded-full border-2 border-gold border-t-transparent" aria-hidden />
+            جارٍ تحليل التلاوة…
+          </span>
+        ) : (
+          <span className="text-sm font-semibold text-muted">اضغط لبدء التسجيل</span>
+        )}
+      </div>
+    </div>
+  )
+}
+
 const SELECT_CLASS =
   'w-full rounded-xl border border-line bg-elevated px-3 py-2 text-sm font-medium text-ink shadow-sm transition focus:border-gold focus:outline-none'
 
@@ -239,6 +343,8 @@ export function PracticePage() {
   const [passageMatch, setPassageMatch] = useState(0)
   const [diagnostics, setDiagnostics] = useState<WordDiagnostic[]>([])
   const [orthographyVariant, setOrthographyVariant] = useState<string | null>(null)
+  const [micLevel, setMicLevel] = useState(0)
+  const [elapsedMs, setElapsedMs] = useState(0)
 
   const recorderRef = useRef<MicRecorder | null>(null)
   const liveTrackerRef = useRef<LiveTajweedTracker | null>(null)
@@ -246,6 +352,8 @@ export function PracticePage() {
   const analyserRef = useRef<AnalyserNode | null>(null)
   const rafIdRef = useRef<number | null>(null)
   const snapshotIntervalRef = useRef<number | null>(null)
+  const latestRmsRef = useRef(0)
+  const startedAtRef = useRef(0)
   const whisper = useWhisper()
   const addAttempt = useProgressStore((s) => s.addAttempt)
 
@@ -350,6 +458,8 @@ export function PracticePage() {
       snapshotIntervalRef.current = null
     }
     analyserRef.current = null
+    latestRmsRef.current = 0
+    setMicLevel(0)
     if (audioCtxRef.current) {
       audioCtxRef.current.close().catch(() => {})
       audioCtxRef.current = null
@@ -431,6 +541,8 @@ export function PracticePage() {
       const recorder = new MicRecorder()
       await recorder.start()
       recorderRef.current = recorder
+      startedAtRef.current = performance.now()
+      setElapsedMs(0)
       setRecording(true)
 
       // Instant per-word timing feedback via microphone energy alone (no ASR while
@@ -465,6 +577,7 @@ export function PracticePage() {
             let sumSquares = 0
             for (let i = 0; i < timeDomain.length; i++) sumSquares += timeDomain[i] * timeDomain[i]
             const rms = Math.sqrt(sumSquares / timeDomain.length)
+            latestRmsRef.current = rms
             tr.feed(rms, performance.now())
             rafIdRef.current = requestAnimationFrame(feedLoop)
           }
@@ -473,6 +586,9 @@ export function PracticePage() {
           snapshotIntervalRef.current = window.setInterval(() => {
             const tr = liveTrackerRef.current
             if (tr) setLiveSnapshot(tr.snapshot())
+            // Speech RMS sits well below 1, so scale it into a usable 0–1 meter range.
+            setMicLevel(Math.min(1, latestRmsRef.current * 12))
+            setElapsedMs(performance.now() - startedAtRef.current)
           }, LIVE_SNAPSHOT_INTERVAL_MS)
         } catch {
           // Live per-word timing is a nice-to-have; recording itself still works without it.
@@ -637,7 +753,15 @@ export function PracticePage() {
 
                 // Still recording: no ASR result yet — reveal progress from the live RMS
                 // timing tracker alone (see LiveWords).
-                const reached = (liveSnapshot?.cursor ?? 0) > r.start
+                // `>= r.start`, not `>`: while the very first word of an ayah is being
+                // recited the cursor still sits on it, and a strict comparison hid the
+                // whole ayah behind the "not reached yet" placeholder until that word
+                // finished — so the live view only ever appeared partway in.
+                const reached = !!liveSnapshot?.started && liveSnapshot.cursor >= r.start
+                const holdProgress =
+                  liveSnapshot && liveSnapshot.currentExpectedMs > 0
+                    ? liveSnapshot.currentVoicedMs / liveSnapshot.currentExpectedMs
+                    : null
                 return (
                   <div key={r.ayahNumber} className="flex items-start gap-2">
                     <div className="flex-1">
@@ -645,6 +769,7 @@ export function PracticePage() {
                         <LiveWords
                           words={referenceWords.slice(r.start, r.end)}
                           liveWords={(liveSnapshot?.words ?? []).slice(r.start, r.end)}
+                          holdProgress={holdProgress}
                         />
                       ) : (
                         <div className="rounded-xl border border-dashed border-line bg-line-soft/40 px-3 py-2.5 text-sm text-faint">
@@ -702,29 +827,14 @@ export function PracticePage() {
 
         {whisper.status === 'ready' && (
           <div className="space-y-4">
-            <div className="flex flex-wrap items-center gap-4">
-              {!recording ? (
-                <button onClick={startRecording} disabled={busy} className="btn-danger disabled:opacity-50">
-                  <PracticeIcon className="h-5 w-5" />
-                  ابدأ التسجيل
-                </button>
-              ) : (
-                <button onClick={stopRecording} className="btn-accent">
-                  <span className="relative flex h-2.5 w-2.5" aria-hidden>
-                    <span className="absolute inline-flex h-full w-full animate-ping rounded-full opacity-70" style={{ backgroundColor: 'currentColor' }} />
-                    <span className="relative inline-flex h-2.5 w-2.5 rounded-full" style={{ backgroundColor: 'currentColor' }} />
-                  </span>
-                  <StopIcon className="h-5 w-5" />
-                  إيقاف وتحليل
-                </button>
-              )}
-              {busy && (
-                <span className="flex items-center gap-2 text-sm font-semibold text-muted">
-                  <span className="h-4 w-4 animate-spin rounded-full border-2 border-gold border-t-transparent" aria-hidden />
-                  جارٍ تحليل التلاوة…
-                </span>
-              )}
-            </div>
+            <Recorder
+              recording={recording}
+              busy={busy}
+              micLevel={micLevel}
+              elapsedMs={elapsedMs}
+              onStart={startRecording}
+              onStop={stopRecording}
+            />
             {micError && <p className="rounded-xl border border-danger/40 bg-danger-soft px-4 py-3 text-sm font-bold text-danger">{micError}</p>}
           </div>
         )}

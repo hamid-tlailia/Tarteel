@@ -7,6 +7,7 @@ import {
   type WhisperForConditionalGeneration,
 } from '@huggingface/transformers'
 import { applyVariant, ORTHOGRAPHY_VARIANTS, type OrthographyVariant } from '../lib/orthography'
+import { timingsFromAveragedAttention, type AttentionTensor } from '../lib/attentionAlignment'
 
 env.allowLocalModels = false
 
@@ -225,7 +226,7 @@ async function scoreAndAlignReferenceWords(
       // every head is cruder than using the curated ones, but it needs no such list and is
       // far better than no timing at all.
       wordTimings = timingsFromAveragedAttention(
-        crossAttentionLayers,
+        crossAttentionLayers as unknown as AttentionTensor[],
         wordSpans,
         initLength,
         decoderInputIdList.length,
@@ -239,70 +240,6 @@ async function scoreAndAlignReferenceWords(
     confidences.length > 0 ? confidences.reduce((sum, c) => sum + c, 0) / confidences.length : 0
 
   return { confidences, wordTimings, variant, meanConfidence }
-}
-
-/**
- * Word timings from cross-attention averaged over every head and layer, for checkpoints that
- * ship no `alignment_heads` list. Each decoder position is placed at the audio frame it
- * attends to most, with the positions forced to advance monotonically — recitation moves
- * forward through the audio, so a later token can never belong to an earlier moment, and
- * clamping that way keeps one noisy head from throwing a word backwards.
- */
-function timingsFromAveragedAttention(
-  layers: Tensor[],
-  wordSpans: [number, number][],
-  initLength: number,
-  decoderLength: number,
-  maxEncoderFrame: number,
-  timePrecision: number,
-): ([number, number] | null)[] | null {
-  const first = layers[0]
-  const dims = first.dims
-  if (dims.length < 2) return null
-  const encoderPositions = dims[dims.length - 1]
-  const decoderPositions = dims[dims.length - 2]
-  if (decoderPositions !== decoderLength || encoderPositions <= 0) return null
-
-  // Sum every head of every layer into one [decoder × encoder] attention map.
-  const summed = new Float64Array(decoderPositions * encoderPositions)
-  let contributions = 0
-  for (const layer of layers) {
-    const data = layer.data as Float32Array
-    const heads = Math.max(1, Math.floor(data.length / (decoderPositions * encoderPositions)))
-    for (let h = 0; h < heads; h++) {
-      const base = h * decoderPositions * encoderPositions
-      for (let i = 0; i < decoderPositions * encoderPositions; i++) summed[i] += data[base + i]
-      contributions++
-    }
-  }
-  if (contributions === 0) return null
-
-  const frameLimit = Math.max(1, Math.min(encoderPositions, maxEncoderFrame || encoderPositions))
-  const frameOf: number[] = new Array(decoderPositions).fill(0)
-  let previous = 0
-  for (let t = 0; t < decoderPositions; t++) {
-    let bestFrame = previous
-    let bestWeight = -Infinity
-    for (let s = previous; s < frameLimit; s++) {
-      const weight = summed[t * encoderPositions + s]
-      if (weight > bestWeight) {
-        bestWeight = weight
-        bestFrame = s
-      }
-    }
-    frameOf[t] = bestFrame
-    previous = bestFrame
-  }
-
-  const timeAt = (decoderPos: number) =>
-    decoderPos >= 0 && decoderPos < decoderPositions ? frameOf[decoderPos] * timePrecision : null
-
-  return wordSpans.map(([start, end]) => {
-    const startTime = timeAt(initLength + start)
-    const endTime = timeAt(initLength + end) ?? timeAt(decoderPositions - 1)
-    if (startTime === null || endTime === null) return null
-    return [startTime, Math.max(endTime, startTime)]
-  })
 }
 
 self.onmessage = async (event: MessageEvent<IncomingMessage>) => {

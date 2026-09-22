@@ -14,6 +14,11 @@ export interface LiveSnapshot {
   started: boolean
   finished: boolean
   words: LiveWordResult[]
+  /** How long the word being recited right now has been voiced, and how long it should
+   * take — together these drive the meter that shows a reciter how much of a madd is
+   * still owed while they are still holding it. Zero when between words. */
+  currentVoicedMs: number
+  currentExpectedMs: number
 }
 
 /** Longest pause between two voiced stretches still counted as one word (ms). */
@@ -151,11 +156,15 @@ export class LiveTajweedTracker {
 
   snapshot(): LiveSnapshot {
     const nextIdx = this.inWord ? this.cursor : this.cursor + 1
+    const expectedNow =
+      this.inWord && this.cursor >= 0 ? Math.round((this.expectedMs[this.cursor] ?? 0) * this.scale) : 0
     return {
       cursor: Math.min(nextIdx, this.words.length),
       started: this.started,
       finished: this.finished,
       words: this.results.map((r) => ({ ...r })),
+      currentVoicedMs: this.inWord ? Math.round(this.voicedMs) : 0,
+      currentExpectedMs: expectedNow,
     }
   }
 }
