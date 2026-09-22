@@ -343,6 +343,19 @@ export class LiveTajweedTracker {
     return this.metersFor(this.cursor, false)
   }
 
+  /**
+   * Whether any audio has reached the hold detector.
+   *
+   * Surfaced because its absence is otherwise completely silent: with no samples the
+   * detector hears nothing, every ruling reads as unperformed, the bars are suppressed
+   * rather than shown empty, and the app falls back to the whole-word duration proxy — all
+   * of which looks exactly like a feature that was never built. It has already broken once
+   * that way, when a call site lost its samples argument in a restore.
+   */
+  hasAudioSignal(): boolean {
+    return this.sawSamples
+  }
+
   /** Changes only at the discrete moments listed on `rev`. Cheap enough to poll per frame. */
   revision(): number {
     return this.rev

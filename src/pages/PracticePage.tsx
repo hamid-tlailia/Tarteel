@@ -259,7 +259,10 @@ function LiveWords({
           const severe = live.missed.severity === 'severe'
           const meters = live.meters ?? []
           return (
-            <span key={i} className="relative inline-block px-1.5 pb-6 pt-0.5">
+            // Wide enough for the ruling's name to be read. The label is the whole point of
+            // naming the fault on the word — truncated to «المَدُّ العَارِضُ لِلشّ…» it teaches
+            // nothing, and a short word like «عَمَّ» is far narrower than any rule name.
+            <span key={i} className="relative inline-block min-w-[6.5rem] px-1.5 pb-8 pt-0.5">
               <span
                 className={clsx(
                   'rounded-lg px-1 ring-1',
@@ -270,7 +273,7 @@ function LiveWords({
               </span>
               <span
                 className={clsx(
-                  'absolute inset-x-0 bottom-0 truncate text-center font-sans text-[9px] font-bold leading-none',
+                  'absolute inset-x-0 bottom-0 block text-balance text-center font-sans text-[9px] font-bold leading-tight',
                   severe ? 'text-danger' : 'text-warn',
                 )}
               >
@@ -279,7 +282,7 @@ function LiveWords({
               {/* Frozen at what was actually given, so the reciter sees *which* of the word's
                   rulings fell short rather than only that one did. */}
               {meters.length > 0 && (
-                <span className="absolute inset-x-1 bottom-3 block">
+                <span className="absolute inset-x-1 bottom-5 block">
                   <RuleBars meters={meters} />
                 </span>
               )}
@@ -457,6 +460,9 @@ export function PracticePage() {
   const [inputRms, setInputRms] = useState<number | null>(null)
   /** The ayah the reciter appears to have slipped into instead of the one selected. */
   const [drift, setDrift] = useState<PassageDrift | null>(null)
+  /** Whether the hold detector actually received audio during the last recitation. Its
+   * absence silences the per-ruling bars completely, so it is reported rather than guessed. */
+  const [liveAudioSignal, setLiveAudioSignal] = useState<boolean | null>(null)
   /** The most recent rule the reciter passed over, shown while they are still reading. */
   const [liveMiss, setLiveMiss] = useState<
     { index: number; rule: TajweedRuleId; kind: 'madd' | 'ghunnah'; severity: 'mild' | 'severe'; at: number } | null
@@ -632,6 +638,7 @@ export function PracticePage() {
     setFollow(null)
     setInputRms(null)
     setDrift(null)
+    setLiveAudioSignal(null)
     setHypothesis(null)
     setLiveSnapshot(null)
     setPassageMatch(0)
@@ -834,7 +841,11 @@ export function PracticePage() {
             for (let i = 0; i < timeDomain.length; i++) sumSquares += timeDomain[i] * timeDomain[i]
             const rms = Math.sqrt(sumSquares / timeDomain.length)
             latestRmsRef.current = rms
-            tr.feed(rms, performance.now())
+            // The samples go with the level, and both matter: energy says a sound is
+            // happening, and only its spectrum says the sound is being *held* — which is
+            // what fills a ruling's bar. Without them the hold detector hears nothing, every
+            // ruling reads as unperformed, and the bars vanish entirely.
+            tr.feed(rms, performance.now(), timeDomain, an.context.sampleRate)
 
             // One bar per ruling of the word being recited, each filling from the hold that
             // belongs to it — so the muttaṣil's bar stops where the muttaṣil stopped, and
@@ -883,6 +894,7 @@ export function PracticePage() {
   const stopRecording = async () => {
     if (!recorderRef.current) return
     stopLiveAnalysis()
+    setLiveAudioSignal(liveTrackerRef.current?.hasAudioSignal() ?? false)
     liveTrackerRef.current?.finish()
     setRecording(false)
     setBusy(true)
@@ -1445,7 +1457,8 @@ export function PracticePage() {
                 <p className="mb-3 text-xs leading-relaxed text-faint">
                   تطابق المقطع ككل: {Math.round(passageMatch * 100)}% · رسم النص المعتمد للمطابقة الصوتية:{' '}
                   {orthographyVariant ?? 'غير متاح'} · إشارة الثقة:{' '}
-                  {isConfidenceUsable(wordConfidences) ? 'صالحة' : 'مهمَلة (مسطّحة قرب الصفر)'}. «الثقة» احتمال النموذج
+                  {isConfidenceUsable(wordConfidences) ? 'صالحة' : 'مهمَلة (مسطّحة قرب الصفر)'} · إشارة
+                  الأحكام اللحظية: {liveAudioSignal === null ? 'لم تُسجَّل بعد' : liveAudioSignal ? 'تعمل' : 'غير متاحة — لن تظهر أسطر الأحكام'}. «الثقة» احتمال النموذج
                   للكلمة، و«المقيس/المتوقع» زمنها بالملي ثانية. و«الغُنّة» رجحان
                   الطاقة في الترددات المنخفضة بالديسيبل — يُقارَن بكلماتك غير الأنفية في التسجيل نفسه، لا بقيمة
                   مطلقة. و«مركز F2» موضع اللسان بالهرتز: يُعرَض للاطّلاع فقط، لأنّ الحكم به على التفخيم والترقيق
