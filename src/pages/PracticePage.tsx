@@ -4,6 +4,7 @@ import { fetchSurahAyahs, fetchSurahList } from '../api/quran'
 import type { Ayah, SurahMeta } from '../types/quran'
 import { TajweedText } from '../components/TajweedText'
 import { PracticeIcon } from '../components/NavIcons'
+import { Dropdown } from '../components/Dropdown'
 import { StopIcon } from '../components/RecorderIcons'
 import { primaryRule, segmentsToWords, TAJWEED_RULE_MAP, type WordWithRules } from '../lib/tajweed'
 import { normalizeArabic } from '../lib/arabicText'
@@ -11,8 +12,10 @@ import { alignWords, type AlignedWord } from '../lib/alignment'
 import {
   detectMaddDurationAlertsForced,
   detectMaddDurationAlertsFromFreeDecode,
+  detectRecitedPace,
   type AcousticAlert,
 } from '../lib/acousticTajweed'
+import { DEFAULT_PACE_ID, PACES, paceOf, type PaceId, type PaceProfile } from '../lib/recitationPace'
 import { detectQalqalahIssues, type QalqalahAlert } from '../lib/qalqalah'
 import { collapseRepeatedWords } from '../lib/repetition'
 import { scoreTranscriptMatch } from '../lib/transcriptMatch'
@@ -307,6 +310,7 @@ function formatElapsed(ms: number): string {
 function Recorder({
   recording,
   busy,
+  preparing = false,
   micLevel,
   elapsedMs,
   onStart,
@@ -315,6 +319,9 @@ function Recorder({
 }: {
   recording: boolean
   busy: boolean
+  /** The model is still downloading. The button stays visible but cannot be pressed yet —
+   * a disabled control that explains itself beats a screen that hides the whole feature. */
+  preparing?: boolean
   /** Only for the "too quiet" warning, which is read rather than watched. The ring itself is
    * sized from the animation-frame loop through `ringRef`, so it tracks the voice directly
    * instead of at whatever rate the page happens to re-render. */
@@ -343,7 +350,7 @@ function Recorder({
         )}
         <button
           onClick={recording ? onStop : onStart}
-          disabled={busy}
+          disabled={busy || preparing}
           aria-label={recording ? 'إيقاف التسجيل وتحليل التلاوة' : 'ابدأ التسجيل'}
           className={clsx(
             'relative flex h-[72px] w-[72px] items-center justify-center rounded-full text-white shadow-lg transition-transform active:scale-95 disabled:opacity-50',
@@ -369,15 +376,14 @@ function Recorder({
             جارٍ تحليل التلاوة…
           </span>
         ) : (
-          <span className="text-sm font-semibold text-muted">اضغط لبدء التسجيل</span>
+          <span className="text-sm font-semibold text-muted">
+            {preparing ? 'لحظة — يُجهَّز التعرّف الصوتي' : 'اضغط لبدء التسجيل'}
+          </span>
         )}
       </div>
     </div>
   )
 }
-
-const SELECT_CLASS =
-  'w-full rounded-xl border border-line bg-elevated px-3 py-2 text-sm font-medium text-ink shadow-sm transition focus:border-gold focus:outline-none'
 
 export function PracticePage() {
   const [surahs, setSurahs] = useState<SurahMeta[]>([])
@@ -393,6 +399,33 @@ export function PracticePage() {
   const [acousticAlerts, setAcousticAlerts] = useState<AcousticAlert[]>([])
   const [qalqalahAlerts, setQalqalahAlerts] = useState<QalqalahAlert[]>([])
   const [nasalityAlerts, setNasalityAlerts] = useState<NasalityAlert[]>([])
+  /**
+   * The pace being recited in. It is not a preference about strictness — it decides what the
+   * rules actually require, since the ʿāriḍ is two ḥarakāt in ḥadr and six in taḥqīq. Kept
+   * across visits because a reciter's pace is a habit, not a per-session choice.
+   */
+  const [paceId, setPaceId] = useState<PaceId>(() => {
+    try {
+      const stored = localStorage.getItem('wartil-pace')
+      if (stored && PACES.some((p) => p.id === stored)) return stored as PaceId
+    } catch {
+      // Private mode or blocked storage — the default is fine.
+    }
+    return DEFAULT_PACE_ID
+  })
+  /** What the reciter actually did, as opposed to what they selected. */
+  const [recitedPace, setRecitedPace] = useState<{ pace: PaceProfile; harakaMs: number; matchesSelected: boolean } | null>(
+    null,
+  )
+  const [showDiagnostics, setShowDiagnostics] = useState(false)
+  useEffect(() => {
+    try {
+      localStorage.setItem('wartil-pace', paceId)
+    } catch {
+      // Not worth surfacing: the choice simply will not be remembered next visit.
+    }
+  }, [paceId])
+
   /** The filled part of the live hold meter, written to directly each animation frame. */
   const holdFillRef = useRef<HTMLSpanElement | null>(null)
   /** The tracker revision the last React render reflected, so renders happen on events. */
@@ -416,6 +449,21 @@ export function PracticePage() {
   const latestRmsRef = useRef(0)
   const startedAtRef = useRef(0)
   const whisper = useWhisper()
+
+  /**
+   * Start fetching the model the moment the page opens.
+   *
+   * It used to sit behind a button explaining Web Workers and one-time downloads, which
+   * asks a reciter to understand the app's architecture before they can recite a word. The
+   * download is still the same size and still happens once; it simply happens while they are
+   * choosing a surah instead of after. The recorder below shows its own progress, so nothing
+   * about the wait is hidden — only the decision they had no basis to make.
+   */
+  useEffect(() => {
+    whisper.load()
+    // `load` no-ops once loading or ready, so a re-run cannot start a second worker.
+  }, [whisper.load])
+
   const addAttempt = useProgressStore((s) => s.addAttempt)
 
   useEffect(() => {
@@ -489,6 +537,7 @@ export function PracticePage() {
     setAcousticAlerts([])
     setQalqalahAlerts([])
     setNasalityAlerts([])
+    setRecitedPace(null)
     setHypothesis(null)
     setLiveSnapshot(null)
     setPassageMatch(0)
@@ -574,7 +623,7 @@ export function PracticePage() {
     setDiagnostics(
       referenceWords.map((refWord, i) => {
         const timing = resultTimings?.[i] ?? null
-        const expected = expectedDurationBreakdown(refWord)
+        const expected = expectedDurationBreakdown(refWord, paceId)
         return {
           refIndex: i,
           word: refWord.word,
@@ -593,8 +642,11 @@ export function PracticePage() {
     // Forced-alignment timing (precise, from the known text) is preferred; fall back to
     // the free decode's approximate word timestamps when it isn't available this time.
     const acoustic = resultTimings
-      ? detectMaddDurationAlertsForced(referenceWords, resultTimings, correctRefIndices)
-      : detectMaddDurationAlertsFromFreeDecode(result, referenceWords, collapsed.chunks, correctRefIndices)
+      ? detectMaddDurationAlertsForced(referenceWords, resultTimings, correctRefIndices, paceId)
+      : detectMaddDurationAlertsFromFreeDecode(result, referenceWords, collapsed.chunks, correctRefIndices, paceId)
+    // What the reciter actually read in, whatever they selected — reported back rather than
+    // silently graded against the wrong yardstick.
+    setRecitedPace(resultTimings ? detectRecitedPace(referenceWords, resultTimings, correctRefIndices, paceId) : null)
     const qalqalah = resultTimings ? detectQalqalahIssues(audioForAnalysis, referenceWords, resultTimings, correctRefIndices) : []
     // Judged against this reciter's own non-nasal words in this same recording — absolute
     // levels say nothing across microphones and voices.
@@ -624,10 +676,15 @@ export function PracticePage() {
       // Instant per-word timing feedback via microphone energy alone (no ASR while
       // recording) — see liveTracker.ts for why this replaced the old approach of
       // re-transcribing the growing recording with Whisper every few seconds.
-      const tracker = new LiveTajweedTracker(referenceWords, LIVE_TAU, (_index, status) => {
-        if (status === 'silent') vibrate([100, 50, 100])
-        else if (status === 'short' || status === 'long') vibrate(60)
-      })
+      const tracker = new LiveTajweedTracker(
+        referenceWords,
+        LIVE_TAU,
+        (_index, status) => {
+          if (status === 'silent') vibrate([100, 50, 100])
+          else if (status === 'short' || status === 'long') vibrate(60)
+        },
+        paceId,
+      )
       liveTrackerRef.current = tracker
       setLiveSnapshot(tracker.snapshot())
 
@@ -768,37 +825,67 @@ export function PracticePage() {
         <div className="hair-gold mt-4 max-w-sm" />
       </div>
 
-      <div className="card-lux grid gap-4 p-5 sm:grid-cols-3">
-        <label className="text-sm">
-          <span className="mb-1.5 block text-xs font-bold text-faint">السورة</span>
-          <select value={surahNumber} onChange={(e) => setSurahNumber(Number(e.target.value))} className={SELECT_CLASS}>
-            {surahs.map((s) => (
-              <option key={s.number} value={s.number}>
-                {s.number}. {s.name}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label className="text-sm">
-          <span className="mb-1.5 block text-xs font-bold text-faint">من آية</span>
-          <select value={fromAyah} onChange={(e) => handleFromChange(Number(e.target.value))} className={SELECT_CLASS}>
-            {ayahOptions.map((n) => (
-              <option key={n} value={n}>
-                {n}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label className="text-sm">
-          <span className="mb-1.5 block text-xs font-bold text-faint">إلى آية</span>
-          <select value={toAyah} onChange={(e) => handleToChange(Number(e.target.value))} className={SELECT_CLASS}>
-            {ayahOptions.map((n) => (
-              <option key={n} value={n}>
-                {n}
-              </option>
-            ))}
-          </select>
-        </label>
+      <div className="card-lux space-y-4 p-5">
+        <div className="grid gap-4 sm:grid-cols-3">
+          <label className="text-sm">
+            <span className="mb-1.5 block text-xs font-bold text-faint">السورة</span>
+            <Dropdown
+              label="السورة"
+              value={surahNumber}
+              onChange={setSurahNumber}
+              options={surahs.map((s) => ({ value: s.number, label: `${s.number}. ${s.name}` }))}
+            />
+          </label>
+          <label className="text-sm">
+            <span className="mb-1.5 block text-xs font-bold text-faint">من آية</span>
+            <Dropdown
+              label="من آية"
+              value={fromAyah}
+              onChange={handleFromChange}
+              options={ayahOptions.map((n) => ({ value: n, label: String(n) }))}
+            />
+          </label>
+          <label className="text-sm">
+            <span className="mb-1.5 block text-xs font-bold text-faint">إلى آية</span>
+            <Dropdown
+              label="إلى آية"
+              value={toAyah}
+              onChange={handleToChange}
+              options={ayahOptions.map((n) => ({ value: n, label: String(n) }))}
+            />
+          </label>
+        </div>
+
+        <div className="hair-gold" />
+
+        {/* The pace is not a difficulty setting. It decides what the rules require: the madd
+            ʿāriḍ is two ḥarakāt in ḥadr and six in taḥqīq, and all three readings are sound. */}
+        <div>
+          <span className="mb-2 block text-xs font-bold text-faint">مرتبة التلاوة</span>
+          <div className="grid grid-cols-3 gap-2">
+            {PACES.map((p) => {
+              const active = p.id === paceId
+              return (
+                <button
+                  key={p.id}
+                  type="button"
+                  onClick={() => setPaceId(p.id)}
+                  aria-pressed={active}
+                  className={clsx(
+                    'rounded-xl border px-2 py-2.5 text-center transition',
+                    active
+                      ? 'border-gold bg-accent-soft text-accent shadow-sm'
+                      : 'border-line bg-elevated text-muted hover:border-gold/50',
+                  )}
+                >
+                  <span className="block font-display text-sm font-bold">{p.nameAr}</span>
+                  <span className="mt-0.5 block text-[10px] leading-tight opacity-80">{p.taglineAr}</span>
+                </button>
+              )
+            })}
+          </div>
+          <p className="mt-2 text-xs leading-relaxed text-faint">{paceOf(paceId).descriptionAr}</p>
+        </div>
       </div>
 
       <div className="card-lux space-y-5 p-6">
@@ -905,49 +992,42 @@ export function PracticePage() {
       </div>
 
       <div className="card-lux p-6">
-        {whisper.status !== 'ready' && (
-          <div>
-            <p className="mb-4 text-sm leading-relaxed text-muted">
-              يعمل التعرّف الصوتي بنموذج Whisper محمّل بالكامل داخل متصفحك (لا حاجة لخادم). يلزم تحميله مرة واحدة (~قد
-              يستغرق دقيقة حسب سرعة الإنترنت).
+        {/* The model loads by itself on arrival, so this is a status line rather than a gate:
+            the recorder is always visible, and simply waits until it can be used. */}
+        {whisper.status === 'loading' && (
+          <div className="mb-5">
+            <div className="h-1.5 w-full overflow-hidden rounded-full bg-line-soft">
+              <div
+                className="h-full rounded-full transition-all duration-300"
+                style={{
+                  width: `${Math.max(4, whisper.progress)}%`,
+                  background: 'linear-gradient(90deg, var(--c-gold-deep), var(--c-gold), var(--c-gold-soft))',
+                }}
+              />
+            </div>
+            <p className="mt-2 text-center text-xs font-bold text-faint">
+              جارٍ تجهيز التعرّف الصوتي… {Math.round(whisper.progress)}٪ — يحدث مرة واحدة فقط
             </p>
-            {whisper.status === 'idle' && (
-              <button onClick={whisper.load} className="btn-gold">
-                تحميل نموذج التعرّف الصوتي
-              </button>
-            )}
-            {whisper.status === 'loading' && (
-              <div>
-                <div className="h-2.5 w-full overflow-hidden rounded-full bg-line-soft">
-                  <div
-                    className="h-full rounded-full transition-all duration-300"
-                    style={{
-                      width: `${whisper.progress}%`,
-                      background: 'linear-gradient(90deg, var(--c-gold-deep), var(--c-gold), var(--c-gold-soft))',
-                    }}
-                  />
-                </div>
-                <p className="mt-2 text-xs font-bold text-faint">جاري التحميل… {Math.round(whisper.progress)}%</p>
-              </div>
-            )}
-            {whisper.status === 'error' && (
-              <div>
-                <p className="rounded-xl border border-danger/40 bg-danger-soft px-4 py-3 text-sm font-bold text-danger">
-                  تعذّر تحميل النموذج ({whisper.error ?? 'خطأ غير معروف'}). قد يكون بسبب الاتصال بالإنترنت.
-                </p>
-                <button onClick={whisper.load} className="btn-accent mt-3">
-                  إعادة المحاولة
-                </button>
-              </div>
-            )}
           </div>
         )}
 
-        {whisper.status === 'ready' && (
+        {whisper.status === 'error' && (
+          <div className="mb-5">
+            <p className="rounded-xl border border-danger/40 bg-danger-soft px-4 py-3 text-sm font-bold text-danger">
+              تعذّر تجهيز التعرّف الصوتي ({whisper.error ?? 'خطأ غير معروف'}). تحقّق من اتصالك بالإنترنت.
+            </p>
+            <button onClick={whisper.load} className="btn-accent mt-3 w-full">
+              إعادة المحاولة
+            </button>
+          </div>
+        )}
+
+        {whisper.status !== 'error' && (
           <div className="space-y-4">
             <Recorder
               recording={recording}
               busy={busy}
+              preparing={whisper.status !== 'ready'}
               micLevel={micLevel}
               elapsedMs={elapsedMs}
               onStart={startRecording}
@@ -963,23 +1043,57 @@ export function PracticePage() {
 
       {wordVerdicts && score && (
         <div className="card-lux space-y-6 p-6">
-          <div className="flex flex-wrap items-center gap-4">
-            <div className="text-gilded font-display text-4xl font-bold">{score.accuracy}%</div>
-            <div className="text-sm font-semibold text-muted">
-              {score.correct} صحيحة من {score.total}
+          {/* A score is only shown when what was heard is actually this passage. Reciting
+              something else entirely used to print a confident percentage next to a note
+              saying that percentage could not be trusted — a number on screen wins that
+              argument every time, so there is now no number to win it with. */}
+          {passageMatch < PASSAGE_MATCH_FLOOR ? (
+            <div className="rounded-xl border border-warn/40 bg-warn-soft px-4 py-4">
+              <p className="font-display text-base font-bold text-warn">لم نتعرّف على هذا المقطع</p>
+              <p className="mt-1.5 text-sm font-semibold leading-relaxed text-warn">
+                ما سُمع لا يطابق الآيات المحدّدة، فلا يمكن إعطاء نتيجة. تأكّد أنك تقرأ المقطع المختار، وأن الميكروفون
+                قريب وواضح، ثم أعد المحاولة.
+              </p>
             </div>
-            {!isConfidenceUsable(wordConfidences) && (
-              <span className="rounded-full bg-warn-soft px-3 py-1 text-xs font-bold text-warn">
-                وضع احتياطي: مطابقة نصية فقط
-              </span>
-            )}
-          </div>
+          ) : (
+            <div className="flex flex-wrap items-center gap-4">
+              <div className="text-gilded font-display text-4xl font-bold">{score.accuracy}%</div>
+              <div className="text-sm font-semibold text-muted">
+                {score.correct} صحيحة من {score.total}
+              </div>
+              {!isConfidenceUsable(wordConfidences) && (
+                <span className="rounded-full bg-warn-soft px-3 py-1 text-xs font-bold text-warn">
+                  وضع احتياطي: مطابقة نصية فقط
+                </span>
+              )}
+            </div>
+          )}
 
-          {passageMatch < PASSAGE_MATCH_FLOOR && (
-            <p className="rounded-xl border border-warn/40 bg-warn-soft px-4 py-3 text-sm font-semibold leading-relaxed text-warn">
-              ما سُمع بعيد عن نصّ المقطع المختار، فالنتيجة أعلاه غير موثوقة. تأكّد أنك تقرأ الآيات المحدّدة، وأن
-              الميكروفون قريب وواضح، ثم أعد المحاولة.
-            </p>
+          {/* Which pace was actually read in. Naming it is half the teaching: a reciter who
+              selected taḥqīq and read in ḥadr has not made a mistake, they have read a
+              different — and equally sound — mode, and should be told so rather than marked
+              down against madds they never owed. */}
+          {recitedPace && passageMatch >= PASSAGE_MATCH_FLOOR && (
+            <div
+              className={clsx(
+                'rounded-xl border px-4 py-3 text-sm leading-relaxed',
+                recitedPace.matchesSelected ? 'border-ok/40 bg-ok/10 text-ok' : 'border-info/40 bg-info-soft text-info',
+              )}
+            >
+              {recitedPace.matchesSelected ? (
+                <>
+                  قرأتَ بمرتبة <span className="font-display font-bold">{recitedPace.pace.nameAr}</span> — وهي المرتبة
+                  التي اخترتها، فقد قُيّست أحكامك على مقاديرها.
+                </>
+              ) : (
+                <>
+                  قرأتَ فعليًا بمرتبة <span className="font-display font-bold">{recitedPace.pace.nameAr}</span>، بينما
+                  اخترتَ <span className="font-display font-bold">{paceOf(paceId).nameAr}</span>. وكلتاهما صحيحة، لكن
+                  المقادير تختلف بينهما — اختر <span className="font-bold">{recitedPace.pace.nameAr}</span> ليُقاس مدّك
+                  على ما قرأتَ به فعلًا.
+                </>
+              )}
+            </div>
           )}
 
           <div className="flex flex-wrap gap-4 rounded-xl border border-line-soft bg-bg/40 p-3 text-xs font-semibold text-muted">
@@ -1092,10 +1206,13 @@ export function PracticePage() {
             </div>
           )}
 
-          {diagnostics.length > 0 && (
+          {/* The raw measurements are for whoever is tuning the thresholds, not for a reciter.
+              Left open to everyone it was simply a wall of numbers with no reading of them;
+              it now stays out of the way unless asked for, and says plainly who it is for. */}
+          {diagnostics.length > 0 && showDiagnostics && (
             <details className="rounded-xl border border-line-soft bg-bg/40">
               <summary className="cursor-pointer px-4 py-3 text-sm font-bold text-muted">
-                🔬 الأرقام الخام للتحليل (لضبط الحساسية)
+                🔬 القياسات الخام (للمطوّرين — لضبط حساسية التحليل)
               </summary>
               <div className="overflow-x-auto px-4 pb-4">
                 <p className="mb-3 text-xs leading-relaxed text-faint">
@@ -1137,6 +1254,16 @@ export function PracticePage() {
                 </table>
               </div>
             </details>
+          )}
+
+          {diagnostics.length > 0 && (
+            <button
+              type="button"
+              onClick={() => setShowDiagnostics((v) => !v)}
+              className="text-xs font-bold text-faint underline decoration-dotted underline-offset-4 transition hover:text-muted"
+            >
+              {showDiagnostics ? 'إخفاء القياسات الخام' : 'عرض القياسات الخام (للمطوّرين)'}
+            </button>
           )}
 
           {coachTips.length > 0 && (
