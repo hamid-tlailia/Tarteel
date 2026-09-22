@@ -22,6 +22,7 @@ import { followScore, type ReferenceTiming } from '../lib/referenceTiming'
 import { detectQalqalahIssues, type QalqalahAlert } from '../lib/qalqalah'
 import { collapseRepeatedWords } from '../lib/repetition'
 import { scoreTranscriptMatch } from '../lib/transcriptMatch'
+import { findPassageDrift, type PassageDrift } from '../lib/passageDrift'
 import { buildCoachTips } from '../lib/coach'
 import { detectGhunnahNasalityAlerts, measureWordTimbre, type NasalityAlert } from '../lib/nasality'
 import {
@@ -467,6 +468,8 @@ export function PracticePage() {
   const [follow, setFollow] = useState<number | null>(null)
   /** How loud the recording actually was, before the app scaled it up. */
   const [inputRms, setInputRms] = useState<number | null>(null)
+  /** The ayah the reciter appears to have slipped into instead of the one selected. */
+  const [drift, setDrift] = useState<PassageDrift | null>(null)
   /** The most recent rule the reciter passed over, shown while they are still reading. */
   const [liveMiss, setLiveMiss] = useState<
     { index: number; rule: TajweedRuleId; kind: 'madd' | 'ghunnah'; severity: 'mild' | 'severe'; at: number } | null
@@ -637,6 +640,7 @@ export function PracticePage() {
     setLiveMiss(null)
     setFollow(null)
     setInputRms(null)
+    setDrift(null)
     setHypothesis(null)
     setLiveSnapshot(null)
     setPassageMatch(0)
@@ -706,6 +710,16 @@ export function PracticePage() {
     // reciter when it is too low for the score to mean anything.
     const passage = scoreTranscriptMatch(collapsed.normalized, referenceNormalized)
     setPassageMatch(passage.score)
+    // A memory slip into a similar ayah is the commonest ḥifẓ failure and the one "did not
+    // match the selected passage" explains worst. The surah is already downloaded.
+    setDrift(
+      findPassageDrift(
+        collapsed.normalized,
+        ayahs,
+        new Set(selectedAyahs.map((a) => a.numberInSurah)),
+        passage.score,
+      ),
+    )
 
     const verdicts = buildWordVerdicts(result, resultConfidences, referenceWords.length, ayahRanges)
 
@@ -1231,6 +1245,18 @@ export function PracticePage() {
                 النموذج مُدرَّب على التلاوة القرآنية وحدها، فإن قرأتَ كلامًا غير قرآني فلن يُكتَب كما نطقتَه، بل
                 سيُحوَّل إلى أقرب نصٍّ قرآني في سمعه — وهذا متوقَّع، لا خلل في الميكروفون.
               </p>
+              {/* Far more useful than "that was not the passage": which ayah it actually was. */}
+              {drift && (
+                <div className="mt-3 rounded-lg border border-info/40 bg-info-soft px-3 py-2.5">
+                  <p className="text-sm font-bold text-info">
+                    يبدو أنك انتقلتَ إلى الآية {drift.ayah.numberInSurah} من نفس السورة
+                  </p>
+                  <p className="mt-1 font-quran text-lg leading-loose text-info">{drift.ayah.text.replace(/\[[a-z]+(?::\d+)?\[([^\]]*)\]\]?/gi, '$1')}</p>
+                  <p className="mt-1 text-xs font-semibold text-info/90">
+                    هذا من المتشابهات — راجع موضع الانتقال بين الآيتين.
+                  </p>
+                </div>
+              )}
               {inputRms !== null && inputRms < 0.015 && (
                 <p className="mt-2 text-xs font-bold leading-relaxed text-warn">
                   كما أنّ مستوى الصوت كان منخفضًا جدًّا ({(inputRms * 100).toFixed(1)}٪). قرّب الميكروفون وارفع صوتك.
