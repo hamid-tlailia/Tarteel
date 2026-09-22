@@ -1,5 +1,5 @@
 import type { WordWithRules } from './tajweed'
-import { expectedWordDurationMs } from './wordTiming'
+import { expectedDurationBreakdown } from './wordTiming'
 
 export type LiveWordStatus = 'pending' | 'current' | 'excellent' | 'ok' | 'short' | 'long' | 'silent'
 
@@ -19,6 +19,10 @@ export interface LiveSnapshot {
    * still owed while they are still holding it. Zero when between words. */
   currentVoicedMs: number
   currentExpectedMs: number
+  /** Further time this word's madd *may* be extended past `currentExpectedMs`, when a rule
+   * permits more than its minimum. The meter shows this beyond the finish line, since
+   * holding it is the reciter's choice and stopping at the minimum is not a fault. */
+  currentOptionalMs: number
 }
 
 /** Longest pause between two voiced stretches still counted as one word (ms). */
@@ -67,6 +71,7 @@ function median(values: number[]): number {
 export class LiveTajweedTracker {
   private words: WordWithRules[]
   private expectedMs: number[]
+  private optionalMs: number[]
   private tau: number
   private onWord: ((index: number, status: LiveWordStatus, measuredMs: number) => void) | null
 
@@ -89,7 +94,9 @@ export class LiveTajweedTracker {
     onWord: ((index: number, status: LiveWordStatus, measuredMs: number) => void) | null = null,
   ) {
     this.words = words
-    this.expectedMs = words.map(expectedWordDurationMs)
+    const breakdowns = words.map(expectedDurationBreakdown)
+    this.expectedMs = breakdowns.map((b) => b.total)
+    this.optionalMs = breakdowns.map((b) => b.optionalExtraMs)
     this.tau = tau
     this.onWord = onWord
     this.results = words.map(() => ({ status: 'pending' as LiveWordStatus, measuredMs: 0 }))
@@ -158,6 +165,8 @@ export class LiveTajweedTracker {
     const nextIdx = this.inWord ? this.cursor : this.cursor + 1
     const expectedNow =
       this.inWord && this.cursor >= 0 ? Math.round((this.expectedMs[this.cursor] ?? 0) * this.scale) : 0
+    const optionalNow =
+      this.inWord && this.cursor >= 0 ? Math.round((this.optionalMs[this.cursor] ?? 0) * this.scale) : 0
     return {
       cursor: Math.min(nextIdx, this.words.length),
       started: this.started,
@@ -165,6 +174,7 @@ export class LiveTajweedTracker {
       words: this.results.map((r) => ({ ...r })),
       currentVoicedMs: this.inWord ? Math.round(this.voicedMs) : 0,
       currentExpectedMs: expectedNow,
+      currentOptionalMs: optionalNow,
     }
   }
 }

@@ -115,38 +115,45 @@ function ComparedWords({
           )
         }
 
+        // A colour alone is ambiguous — the reference text above is *also* coloured, by
+        // rule, so a hue there means "this word contains a ghunnah", while the same hue
+        // here would mean "you shortened it". The rule and the fault are named in words
+        // under every flagged word so the two can never be confused.
         if (acoustic) {
           const severe = acoustic.severity === 'severe'
+          const ruleName = TAJWEED_RULE_MAP[acoustic.rule].nameAr
+          const fault =
+            acoustic.kind === 'ghunnah'
+              ? severe
+                ? 'لم تظهر الغُنّة'
+                : 'الغُنّة أقصر من المطلوب'
+              : severe
+                ? 'لم يُمدّ إطلاقًا'
+                : 'المدّ أقصر من المطلوب'
           return (
-            <span
-              key={v.refIndex}
-              className={clsx(
-                'rounded-lg px-1.5 py-0.5 underline decoration-wavy',
-                severe ? 'bg-severe-soft text-severe decoration-severe' : 'bg-warn-soft text-warn decoration-warn',
-              )}
-              title={
-                (acoustic.kind === 'ghunnah'
-                  ? severe
-                    ? `⏱️ الغُنّة لم تظهر (${TAJWEED_RULE_MAP[acoustic.rule].nameAr})`
-                    : `⏱️ الغُنّة أقصر من المطلوب (${TAJWEED_RULE_MAP[acoustic.rule].nameAr})`
-                  : severe
-                    ? `⏱️ المدّ لم يُمدّ إطلاقًا (${TAJWEED_RULE_MAP[acoustic.rule].nameAr})`
-                    : `⏱️ المدّ يبدو أقصر من المطلوب (${TAJWEED_RULE_MAP[acoustic.rule].nameAr})`) + confidenceLabel
-              }
-            >
-              {refWord?.word}
+            <span key={v.refIndex} className="inline-flex flex-col items-center gap-0.5">
+              <span
+                className={clsx(
+                  'rounded-lg px-1.5 py-0.5 underline decoration-wavy',
+                  severe ? 'bg-severe-soft text-severe decoration-severe' : 'bg-warn-soft text-warn decoration-warn',
+                )}
+              >
+                {refWord?.word}
+              </span>
+              <span className={clsx('font-sans text-[10px] font-bold leading-tight', severe ? 'text-severe' : 'text-warn')}>
+                {ruleName}: {fault}
+              </span>
             </span>
           )
         }
 
         if (hasQalqalahIssue) {
           return (
-            <span
-              key={v.refIndex}
-              className="rounded-lg bg-qalqalah-soft px-1.5 py-0.5 text-qalqalah underline decoration-wavy decoration-qalqalah"
-              title={`💥 قلقلة غير واضحة${confidenceLabel}`}
-            >
-              {refWord?.word}
+            <span key={v.refIndex} className="inline-flex flex-col items-center gap-0.5">
+              <span className="rounded-lg bg-qalqalah-soft px-1.5 py-0.5 text-qalqalah underline decoration-wavy decoration-qalqalah">
+                {refWord?.word}
+              </span>
+              <span className="font-sans text-[10px] font-bold leading-tight text-qalqalah">القلقلة: لم تتضح</span>
             </span>
           )
         }
@@ -179,8 +186,9 @@ function LiveWords({
 }: {
   words: WordWithRules[]
   liveWords: LiveWordResult[]
-  /** 0–1+ progress of the word being recited right now toward its expected duration. */
-  holdProgress: number | null
+  /** What the word being recited right now has been held for, what its rules require, and
+   * what they merely permit beyond that. Null between words. */
+  holdProgress: { voicedMs: number; requiredMs: number; optionalMs: number } | null
 }) {
   return (
     <div className="flex flex-wrap gap-x-1.5 gap-y-2 font-quran text-2xl" dir="rtl">
@@ -197,13 +205,21 @@ function LiveWords({
           )
         }
         if (live.status === 'current') {
-          // While the word is still being held, a bar fills toward the duration its rules
-          // call for — so a reciter can see how much of a madd is still owed rather than
-          // only being told afterwards that it was cut short.
-          const filled = holdProgress === null ? 0 : Math.min(1, holdProgress)
-          const complete = (holdProgress ?? 0) >= 1
+          // The bar fills toward what the word's rules actually *require*, and completes
+          // there. Anything a rule merely permits beyond that — the ʿāriḍ may be held for
+          // two, four or six — sits past the finish line as a lighter track the reciter may
+          // take or leave. Filling toward the sum of every madd in the word would demand
+          // the longest reading of each as though it were owed, which it is not.
+          const required = holdProgress?.requiredMs ?? 0
+          const optional = holdProgress?.optionalMs ?? 0
+          const voiced = holdProgress?.voicedMs ?? 0
+          const span = required + optional
+          const complete = required > 0 && voiced >= required
+          const requiredWidth = span > 0 ? (required / span) * 100 : 100
+          const filledWidth = span > 0 ? Math.min(100, (voiced / span) * 100) : 0
+
           return (
-            <span key={i} className="relative inline-block px-1.5 pb-1.5 pt-0.5">
+            <span key={i} className="relative inline-block px-1.5 pb-2 pt-0.5">
               <span
                 className={clsx(
                   'rounded-lg px-1 ring-1 transition-colors',
@@ -212,11 +228,22 @@ function LiveWords({
               >
                 {w.word}
               </span>
-              <span aria-hidden className="absolute inset-x-1 bottom-0 h-1 overflow-hidden rounded-full bg-line-soft">
+              <span aria-hidden className="absolute inset-x-1 bottom-0 h-1.5 overflow-hidden rounded-full bg-line-soft">
+                {/* The permitted-but-optional stretch, shown dimmer so it never reads as owed. */}
+                {optional > 0 && (
+                  <span
+                    className="absolute inset-y-0 right-0 bg-gold/20"
+                    style={{ width: `${100 - requiredWidth}%` }}
+                  />
+                )}
                 <span
-                  className={clsx('block h-full rounded-full transition-[width] duration-100', complete ? 'bg-ok' : 'bg-gold')}
-                  style={{ width: `${filled * 100}%` }}
+                  className={clsx('absolute inset-y-0 right-0 rounded-full transition-[width] duration-100', complete ? 'bg-ok' : 'bg-gold')}
+                  style={{ width: `${filledWidth}%` }}
                 />
+                {/* The finish line: where the obligation ends and choice begins. */}
+                {optional > 0 && (
+                  <span className="absolute inset-y-0 w-px bg-ok/70" style={{ right: `${requiredWidth}%` }} />
+                )}
               </span>
             </span>
           )
@@ -701,7 +728,12 @@ export function PracticePage() {
 
       <div className="card-lux space-y-5 p-6">
         <div>
-          <h2 className="title-ornament mb-3 font-display text-base font-bold text-accent">النص المرجعي</h2>
+          <h2 className="title-ornament mb-1 font-display text-base font-bold text-accent">النص المرجعي</h2>
+          {/* Without this, the rule colours here get read as a verdict on the recitation. */}
+          <p className="mb-3 text-xs leading-relaxed text-faint">
+            الألوان هنا تدلّ على <span className="font-bold">حكم التجويد في الكلمة</span> لا على صحة قراءتك — التقييم
+            يظهر تحت «ما تقرأه الآن».
+          </p>
           <div className="space-y-3">
             {selectedAyahs.map((a) => (
               <div key={a.number} className="ayah-frame flex items-start gap-2 p-4">
@@ -764,7 +796,11 @@ export function PracticePage() {
                 const reached = !!liveSnapshot?.started && liveSnapshot.cursor >= r.start
                 const holdProgress =
                   liveSnapshot && liveSnapshot.currentExpectedMs > 0
-                    ? liveSnapshot.currentVoicedMs / liveSnapshot.currentExpectedMs
+                    ? {
+                        voicedMs: liveSnapshot.currentVoicedMs,
+                        requiredMs: liveSnapshot.currentExpectedMs,
+                        optionalMs: liveSnapshot.currentOptionalMs,
+                      }
                     : null
                 return (
                   <div key={r.ayahNumber} className="flex items-start gap-2">

@@ -2,7 +2,7 @@ import type { WordWithRules } from './tajweed'
 import type { TajweedRuleId } from '../types/quran'
 import type { AlignedWord } from './alignment'
 import type { TimedChunk } from '../asr/whisper.worker'
-import { expectedDurationBreakdown } from './wordTiming'
+import { expectedDurationBreakdown, fastestPlausibleDuration } from './wordTiming'
 
 /**
  * Heuristic acoustic check for madd (elongation) rules — the step beyond plain text
@@ -57,6 +57,10 @@ const HOLD_FULFILLED_ENOUGH = 0.6
 /** Below this share of the obligation, the sound was effectively never held at all. */
 const HOLD_ABSENT_BELOW = 0.2
 
+/** Word timings come from the ASR at roughly 20ms resolution; allow a few frames either way
+ * before calling a duration physically impossible. */
+const TIMING_TOLERANCE_MS = 60
+
 function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value))
 }
@@ -100,10 +104,28 @@ function judgeHold(
   if (obligation <= 0) return null
 
   const performed = (measuredMs - unheld) / obligation
-  if (performed >= HOLD_FULFILLED_ENOUGH) return null
+
+  // The pace-independent check. Asking only whether a word is short *relative to the rest*
+  // cannot see a passage whose obligations are all skipped alike — everything is equally
+  // short, so nothing is an outlier. This asks instead whether the word had room for its
+  // hold at all, at the fastest anyone plausibly recites.
+  //
+  // No further leniency is applied on top: those floors already assume the quickest
+  // syllables and the shortest holds anyone performs, so discounting them again (as a first
+  // version did, by reusing the 40% allowance below) would let a word through that could
+  // not physically have contained its hold. Only measurement error is allowed for.
+  const fastest = fastestPlausibleDuration(refWord, kind)
+  const floorMs = fastest.baseMs + fastest.holdMs
+  const impossible = fastest.holdMs > 0 && measuredMs < floorMs - TIMING_TOLERANCE_MS
+
+  if (performed >= HOLD_FULFILLED_ENOUGH && !impossible) return null
+
+  const shortfall = impossible
+    ? Math.min(performed, (measuredMs - fastest.baseMs) / Math.max(1, fastest.holdMs))
+    : performed
   return {
-    severity: performed <= HOLD_ABSENT_BELOW ? 'severe' : 'mild',
-    minimumMs: unheld + obligation * HOLD_FULFILLED_ENOUGH,
+    severity: shortfall <= HOLD_ABSENT_BELOW ? 'severe' : 'mild',
+    minimumMs: Math.max(unheld + obligation * HOLD_FULFILLED_ENOUGH, floorMs - TIMING_TOLERANCE_MS),
   }
 }
 
@@ -111,6 +133,26 @@ function median(values: number[]): number {
   const sorted = [...values].sort((a, b) => a - b)
   const mid = Math.floor(sorted.length / 2)
   return sorted.length % 2 === 0 ? (sorted[mid - 1] + sorted[mid]) / 2 : sorted[mid]
+}
+
+/**
+ * The reciter's pace for judging one word, taken from *the other* words of the passage.
+ *
+ * Leaving the word out matters. Including it drags the yardstick toward the very thing
+ * being measured, and on a short passage it dominates: with two words, a median that
+ * includes the rushed one lands halfway to it and the fault half disappears. Excluding it
+ * asks the only question worth asking — was this word short *compared with how this reciter
+ * read everything else*.
+ *
+ * This replaces a blunt `ratios.length < 3` guard that simply returned no alerts at all on
+ * short passages. «عَمَّ يَتَسَآءَلُونَ» is two words, so an ayah of Sūrat al-Nabaʾ recited with
+ * the ghunnah deliberately dropped raised nothing whatever — the check had not disagreed,
+ * it had never run.
+ */
+function paceExcluding(ratios: number[], index: number): number | null {
+  const others = ratios.filter((_, i) => i !== index)
+  if (others.length === 0) return null
+  return clamp(median(others), 0.4, 2.5)
 }
 
 /**
@@ -134,19 +176,18 @@ export function detectMaddDurationAlertsForced(
   // ignored syllable count entirely, so a long word was credited with elongation it never
   // had while a short one was condemned for lacking elongation it did perform.
   const ratios: number[] = []
+  const ratioIndex = new Map<number, number>()
   referenceWords.forEach((refWord, i) => {
     const timing = wordTimings[i]
     if (!timing) return
     const measuredMs = (timing[1] - timing[0]) * 1000
     if (measuredMs <= 0) return
     const expected = expectedDurationBreakdown(refWord)
-    if (expected.total > 0) ratios.push(measuredMs / expected.total)
+    if (expected.total > 0) {
+      ratioIndex.set(i, ratios.length)
+      ratios.push(measuredMs / expected.total)
+    }
   })
-  if (ratios.length < 3) return []
-
-  // The reciter's own pace, as a multiple of the reference tempo. Taking the median keeps
-  // one rushed or drawn-out word from dragging the whole scale with it.
-  const tempoScale = clamp(median(ratios), 0.4, 2.5)
 
   const alerts: AcousticAlert[] = []
   referenceWords.forEach((refWord, i) => {
@@ -158,6 +199,10 @@ export function detectMaddDurationAlertsForced(
 
     const measuredMs = (timing[1] - timing[0]) * 1000
     if (measuredMs <= 0) return
+
+    const slot = ratioIndex.get(i)
+    const tempoScale = slot === undefined ? null : paceExcluding(ratios, slot)
+    if (tempoScale === null) return
 
     const judged = judgeHold(refWord, held.kind, measuredMs, tempoScale)
     if (!judged) return
@@ -203,6 +248,7 @@ export function detectMaddDurationAlertsFromFreeDecode(
   // Same syllable-and-rule-aware comparison as the forced path above — see the note there
   // for why a flat median of every word's duration was the wrong baseline.
   const ratios: number[] = []
+  const ratioIndex = new Map<number, number>()
   for (const w of aligned) {
     if (w.refIndex === null) continue
     const refWord = referenceWords[w.refIndex]
@@ -210,10 +256,11 @@ export function detectMaddDurationAlertsFromFreeDecode(
     const measuredMs = measuredMsOf(w)
     if (measuredMs === null) continue
     const expected = expectedDurationBreakdown(refWord)
-    if (expected.total > 0) ratios.push(measuredMs / expected.total)
+    if (expected.total > 0) {
+      ratioIndex.set(w.refIndex, ratios.length)
+      ratios.push(measuredMs / expected.total)
+    }
   }
-  if (ratios.length < 3) return []
-  const tempoScale = clamp(median(ratios), 0.4, 2.5)
 
   const alerts: AcousticAlert[] = []
   for (const w of aligned) {
@@ -225,6 +272,10 @@ export function detectMaddDurationAlertsFromFreeDecode(
 
     const measuredMs = measuredMsOf(w)
     if (measuredMs === null) continue
+
+    const slot = ratioIndex.get(w.refIndex)
+    const tempoScale = slot === undefined ? null : paceExcluding(ratios, slot)
+    if (tempoScale === null) continue
 
     const judged = judgeHold(refWord, held.kind, measuredMs, tempoScale)
     if (!judged) continue
