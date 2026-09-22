@@ -51,24 +51,32 @@ export function buildCoachTips({
 
   for (const alert of acousticAlerts) {
     const word = plain(alert.word)
-    const ruleName = TAJWEED_RULE_MAP[alert.rule]?.nameAr ?? 'المدّ'
-    tips.push(
-      alert.severity === 'severe'
-        ? {
-            key: `madd-${alert.refIndex}`,
-            word,
-            title: 'المدّ لم يُمدّ',
-            action: `«${word}» فيها ${ruleName}، ونُطقت كأنها بلا مدّ. أطِل حرف المدّ بمقدار حركاته كاملة ولا تقطعه بالنَّفَس.`,
-            severity: 'high',
-          }
-        : {
-            key: `madd-${alert.refIndex}`,
-            word,
-            title: 'قصّرت المدّ',
-            action: `${ruleName} في «${word}» جاء أقصر من المطلوب. عُدّ حركاته في نفسك أثناء النطق حتى يستوي مقداره.`,
-            severity: 'medium',
-          },
-    )
+    const ruleName = TAJWEED_RULE_MAP[alert.rule]?.nameAr ?? (alert.kind === 'ghunnah' ? 'الغُنّة' : 'المدّ')
+    const key = `${alert.kind}-${alert.refIndex}`
+    const severe = alert.severity === 'severe'
+
+    if (alert.kind === 'ghunnah') {
+      tips.push({
+        key,
+        word,
+        title: severe ? 'الغُنّة لم تظهر' : 'قصّرت الغُنّة',
+        action: severe
+          ? `«${word}» فيها ${ruleName}، ومرّت بلا غُنّة. أخرِج الصوت من الخيشوم وأمسكه مقدار حركتين قبل أن تنتقل إلى ما بعده.`
+          : `الغُنّة في «${word}» جاءت أقصر من حركتين. أبقِ صوت الخيشوم واضحًا حتى تكتمل الحركتان.`,
+        severity: severe ? 'high' : 'medium',
+      })
+      continue
+    }
+
+    tips.push({
+      key,
+      word,
+      title: severe ? 'المدّ لم يُمدّ' : 'قصّرت المدّ',
+      action: severe
+        ? `«${word}» فيها ${ruleName}، ونُطقت كأنها بلا مدّ. أطِل حرف المدّ بمقدار حركاته كاملة ولا تقطعه بالنَّفَس.`
+        : `${ruleName} في «${word}» جاء أقصر من المطلوب. عُدّ حركاته في نفسك أثناء النطق حتى يستوي مقداره.`,
+      severity: severe ? 'high' : 'medium',
+    })
   }
 
   for (const alert of qalqalahAlerts) {

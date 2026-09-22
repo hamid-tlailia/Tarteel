@@ -50,21 +50,27 @@ export interface ExpectedDuration {
    * the floor below which "the madd is missing entirely" is a fair thing to say. Equal to
    * `total` for words carrying no madd. */
   withoutMadd: number
+  /** The same, for a word judged on its ghunnah: how long it would take with the nasal
+   * sound not held at all. Equal to `total` for words carrying no ghunnah. */
+  withoutGhunnah: number
 }
 
 export function expectedDurationBreakdown(w: WordWithRules): ExpectedDuration {
   const base = WORD_FIXED_MS + HARAKA_MS * countSyllables(w.word)
   let maddMs = 0
+  let ghunnaMs = 0
   let otherMs = 0
   for (const rule of w.rules) {
     const harakat = MADD_HARAKAT[rule]
     if (harakat) maddMs += harakat * HARAKA_MS
-    if (GHUNNA_RULES.has(rule)) otherMs += GHUNNA_HARAKAT * HARAKA_MS
+    if (GHUNNA_RULES.has(rule)) ghunnaMs += GHUNNA_HARAKAT * HARAKA_MS
     if (rule === 'qalqalah') otherMs += QALQALAH_BOUNCE_MS
   }
+  const floor = (ms: number) => Math.max(MIN_WORD_MS, Math.round(ms))
   return {
-    total: Math.max(MIN_WORD_MS, Math.round(base + maddMs + otherMs)),
-    withoutMadd: Math.max(MIN_WORD_MS, Math.round(base + otherMs)),
+    total: floor(base + maddMs + ghunnaMs + otherMs),
+    withoutMadd: floor(base + ghunnaMs + otherMs),
+    withoutGhunnah: floor(base + maddMs + otherMs),
   }
 }
 

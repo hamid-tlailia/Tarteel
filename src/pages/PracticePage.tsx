@@ -125,9 +125,13 @@ function ComparedWords({
                 severe ? 'bg-severe-soft text-severe decoration-severe' : 'bg-warn-soft text-warn decoration-warn',
               )}
               title={
-                (severe
-                  ? `⏱️ المدّ لم يُمدّ إطلاقًا (${TAJWEED_RULE_MAP[acoustic.rule].nameAr})`
-                  : `⏱️ المدّ يبدو أقصر من المطلوب (${TAJWEED_RULE_MAP[acoustic.rule].nameAr})`) + confidenceLabel
+                (acoustic.kind === 'ghunnah'
+                  ? severe
+                    ? `⏱️ الغُنّة لم تظهر (${TAJWEED_RULE_MAP[acoustic.rule].nameAr})`
+                    : `⏱️ الغُنّة أقصر من المطلوب (${TAJWEED_RULE_MAP[acoustic.rule].nameAr})`
+                  : severe
+                    ? `⏱️ المدّ لم يُمدّ إطلاقًا (${TAJWEED_RULE_MAP[acoustic.rule].nameAr})`
+                    : `⏱️ المدّ يبدو أقصر من المطلوب (${TAJWEED_RULE_MAP[acoustic.rule].nameAr})`) + confidenceLabel
               }
             >
               {refWord?.word}
@@ -891,7 +895,7 @@ export function PracticePage() {
 
           {acousticAlerts.length > 0 && (
             <div>
-              <h3 className="mb-3 font-display text-base font-bold text-severe">⏱️ تنبيهات صوتية تجريبية (طول المدّ)</h3>
+              <h3 className="mb-3 font-display text-base font-bold text-severe">⏱️ تنبيهات صوتية تجريبية (طول المدّ والغُنّة)</h3>
               <ul className="space-y-2.5">
                 {acousticAlerts.map((a) => (
                   <li
@@ -901,7 +905,19 @@ export function PracticePage() {
                       a.severity === 'severe' ? 'border-severe/40 bg-severe-soft text-severe' : 'border-warn/40 bg-warn-soft text-warn',
                     )}
                   >
-                    {a.severity === 'severe' ? (
+                    {a.kind === 'ghunnah' ? (
+                      a.severity === 'severe' ? (
+                        <>
+                          الغُنّة في كلمة <span className="font-quran font-bold">«{a.word}»</span> لم تظهر —{' '}
+                          {TAJWEED_RULE_MAP[a.rule].nameAr} يتطلب غُنّة واضحة من الخيشوم مقدار حركتين.
+                        </>
+                      ) : (
+                        <>
+                          الغُنّة في كلمة <span className="font-quran font-bold">«{a.word}»</span> أقصر من المطلوب —{' '}
+                          {TAJWEED_RULE_MAP[a.rule].nameAr} يتطلب إتمام الحركتين.
+                        </>
+                      )
+                    ) : a.severity === 'severe' ? (
                       <>
                         المدّ في كلمة <span className="font-quran font-bold">«{a.word}»</span> لم يُمدّ إطلاقًا —{' '}
                         {TAJWEED_RULE_MAP[a.rule].nameAr} يتطلب مدًا واضحًا، لا مجرد نطق عادي.

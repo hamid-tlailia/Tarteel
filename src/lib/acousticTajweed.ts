@@ -23,15 +23,31 @@ const MADD_RULES = new Set<TajweedRuleId>([
   'madda_necessary',
 ])
 
-/** How far under its expected duration a word may fall before the madd is called short.
- * Generous on purpose: recitation pace varies within a single passage, and telling a
- * reciter they dropped a madd they actually performed is the more damaging error. */
-const MADD_TOLERANCE = 0.3
+/** Rules whose performance is a held nasal sound of about two ḥarakāt. Their duration is
+ * checkable the same way a madd's is, and until now it fed the expected duration of a word
+ * without ever being verified on its own — only madd raised an alert, so a clipped ghunnah
+ * in a word carrying no madd went unreported. */
+const GHUNNA_RULES = new Set<TajweedRuleId>([
+  'ghunnah',
+  'ikhafa',
+  'ikhafa_shafawi',
+  'idgham_ghunnah',
+  'iqlab',
+])
 
-/** How close to the no-elongation duration counts as "the madd is not there at all".
- * A band rather than an exact boundary, because word timings come from the ASR at roughly
- * 20ms resolution — far coarser than the knife edge an exact comparison would draw. */
-const MADD_DROPPED_MARGIN = 1.15
+/**
+ * How much of the hold a rule demands must actually be performed before it passes.
+ *
+ * Measured against the *obligation itself* — the extra time the rule adds to the word —
+ * rather than against the word's whole duration. A flat percentage of the total was too
+ * blunt: on a long word like «ءَامَنَّا», three syllables of base duration meant that dropping
+ * the madd entirely shortened the word by only about a quarter, which slipped under a 30%
+ * tolerance and went unreported. Judging the obligation directly makes detection
+ * independent of how long the surrounding word happens to be.
+ */
+const HOLD_FULFILLED_ENOUGH = 0.6
+/** Below this share of the obligation, the sound was effectively never held at all. */
+const HOLD_ABSENT_BELOW = 0.2
 
 function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value))
@@ -41,11 +57,46 @@ export interface AcousticAlert {
   refIndex: number
   word: string
   rule: TajweedRuleId
+  /** Which kind of held sound fell short — they need different wording to the reciter. */
+  kind: 'madd' | 'ghunnah'
   durationMs: number
   expectedMinMs: number
   /** 'severe': the word took no longer than it would have with no elongation at all, so
    * the madd looks absent. 'mild': elongated, but short of what the rule asks for. */
   severity: 'mild' | 'severe'
+}
+
+/** The rule this word is judged on: a madd if it carries one, otherwise a ghunnah. A word
+ * with both is judged on its madd, which is the longer and more audible obligation. */
+function heldRuleOf(rules: TajweedRuleId[]): { rule: TajweedRuleId; kind: 'madd' | 'ghunnah' } | null {
+  const madd = rules.find((r) => MADD_RULES.has(r))
+  if (madd) return { rule: madd, kind: 'madd' }
+  const ghunnah = rules.find((r) => GHUNNA_RULES.has(r))
+  return ghunnah ? { rule: ghunnah, kind: 'ghunnah' } : null
+}
+
+/**
+ * How much of a word's held obligation was actually performed, at this reciter's pace.
+ * Returns null when the hold was long enough to pass, or when the rule demands no extra
+ * time at all.
+ */
+function judgeHold(
+  refWord: WordWithRules,
+  kind: 'madd' | 'ghunnah',
+  measuredMs: number,
+  tempoScale: number,
+): { severity: 'mild' | 'severe'; minimumMs: number } | null {
+  const expected = expectedDurationBreakdown(refWord)
+  const unheld = (kind === 'madd' ? expected.withoutMadd : expected.withoutGhunnah) * tempoScale
+  const obligation = expected.total * tempoScale - unheld
+  if (obligation <= 0) return null
+
+  const performed = (measuredMs - unheld) / obligation
+  if (performed >= HOLD_FULFILLED_ENOUGH) return null
+  return {
+    severity: performed <= HOLD_ABSENT_BELOW ? 'severe' : 'mild',
+    minimumMs: unheld + obligation * HOLD_FULFILLED_ENOUGH,
+  }
 }
 
 function median(values: number[]): number {
@@ -94,27 +145,23 @@ export function detectMaddDurationAlertsForced(
     if (!correctRefIndices.has(i)) return
     const timing = wordTimings[i]
     if (!timing) return
-    const maddRule = refWord.rules.find((r) => MADD_RULES.has(r))
-    if (!maddRule) return
+    const held = heldRuleOf(refWord.rules)
+    if (!held) return
 
     const measuredMs = (timing[1] - timing[0]) * 1000
     if (measuredMs <= 0) return
 
-    const expected = expectedDurationBreakdown(refWord)
-    const expectedMs = expected.total * tempoScale
-    // "Dropped entirely" now means something checkable: the word took no longer than it
-    // would have without elongating its madd letter at all, at this reciter's own pace.
-    const noMaddMs = expected.withoutMadd * tempoScale
-
-    if (measuredMs >= expectedMs * (1 - MADD_TOLERANCE)) return
+    const judged = judgeHold(refWord, held.kind, measuredMs, tempoScale)
+    if (!judged) return
 
     alerts.push({
       refIndex: i,
       word: refWord.word,
-      rule: maddRule,
+      rule: held.rule,
+      kind: held.kind,
       durationMs: measuredMs,
-      expectedMinMs: expectedMs * (1 - MADD_TOLERANCE),
-      severity: measuredMs <= noMaddMs * MADD_DROPPED_MARGIN ? 'severe' : 'mild',
+      expectedMinMs: judged.minimumMs,
+      severity: judged.severity,
     })
   })
   return alerts
@@ -165,24 +212,23 @@ export function detectMaddDurationAlertsFromFreeDecode(
     if (w.refIndex === null || w.hypIndex === null) continue
     if (!correctRefIndices.has(w.refIndex)) continue
     const refWord = referenceWords[w.refIndex]
-    const maddRule = refWord?.rules.find((r) => MADD_RULES.has(r))
-    if (!maddRule) continue
+    const held = refWord ? heldRuleOf(refWord.rules) : null
+    if (!held) continue
 
     const measuredMs = measuredMsOf(w)
     if (measuredMs === null) continue
 
-    const expected = expectedDurationBreakdown(refWord)
-    const expectedMs = expected.total * tempoScale
-    const noMaddMs = expected.withoutMadd * tempoScale
-    if (measuredMs >= expectedMs * (1 - MADD_TOLERANCE)) continue
+    const judged = judgeHold(refWord, held.kind, measuredMs, tempoScale)
+    if (!judged) continue
 
     alerts.push({
       refIndex: w.refIndex,
       word: refWord.word,
-      rule: maddRule,
+      rule: held.rule,
+      kind: held.kind,
       durationMs: measuredMs,
-      expectedMinMs: expectedMs * (1 - MADD_TOLERANCE),
-      severity: measuredMs <= noMaddMs * MADD_DROPPED_MARGIN ? 'severe' : 'mild',
+      expectedMinMs: judged.minimumMs,
+      severity: judged.severity,
     })
   }
   return alerts
