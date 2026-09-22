@@ -1,4 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties } from 'react'
+import { createPortal } from 'react-dom'
 import type { TajweedSegment } from '../types/quran'
 import { TAJWEED_RULE_MAP } from '../lib/tajweed'
 
@@ -20,6 +21,14 @@ export function TajweedText({ segments, colored = true, className, interactive =
   // Position the tooltip from measured rects so it never runs off-screen near
   // the start/end of a line — a fixed "centered above" offset used to overflow
   // the viewport for tajweed letters near either edge of the text.
+  //
+  // The rects are viewport coordinates, which is why the tooltip has to be portalled to
+  // <body> below: `position: fixed` resolves against the nearest ancestor with a filter,
+  // backdrop-filter or transform rather than against the viewport, and .card-lux — the
+  // panel this text sits in — carries a backdrop-filter. Left inside it, the tooltip was
+  // offset by the card's own position, landing outside it, clipped by its rounded box and
+  // painted beneath the next card. It was being rendered the whole time; it just was not
+  // where anyone could see it.
   useLayoutEffect(() => {
     if (active === null) return
     const trigger = triggerRefs.current[active]
@@ -105,11 +114,13 @@ export function TajweedText({ segments, colored = true, className, interactive =
             >
               {seg.text}
             </span>
-            {interactive && active === i && (
+            {interactive &&
+              active === i &&
+              createPortal(
               <div
                 ref={tooltipRef}
-                style={tooltipStyle}
-                className="card-lux z-30 w-60 rounded-2xl! p-3.5 text-right font-sans text-sm leading-relaxed text-ink shadow-[var(--shadow-lift)]"
+                style={{ ...tooltipStyle, zIndex: 60 }}
+                className="card-lux w-60 rounded-2xl! p-3.5 text-right font-sans text-sm leading-relaxed text-ink shadow-[var(--shadow-lift)]"
                 dir="rtl"
               >
                 <span className="mb-1.5 flex items-center gap-2 font-display text-base font-bold" style={{ color: rule.color }}>
@@ -122,7 +133,8 @@ export function TajweedText({ segments, colored = true, className, interactive =
                   </span>
                 )}
                 <span className="block text-xs leading-relaxed text-muted">{rule.description}</span>
-              </div>
+              </div>,
+              document.body,
             )}
           </span>
         )
