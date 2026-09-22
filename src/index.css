@@ -39,6 +39,10 @@
   --color-info-soft: var(--c-info-soft);
   --color-qalqalah: var(--c-qalqalah);
   --color-qalqalah-soft: var(--c-qalqalah-soft);
+  /* The ghunnah alerts reuse the rule's own colour rather than a fifth palette entry, so the
+     panel matches the letters it is talking about in every theme. */
+  --color-ghunnah: var(--tw-ghunnah);
+  --color-ghunnah-soft: color-mix(in srgb, var(--tw-ghunnah) 12%, transparent);
 }
 
 /* ─────────────────────────── Theme 1: العاجي الذهبي (Ivory Gold) ─────────────────────────── */

@@ -1,4 +1,5 @@
-const TARGET_SAMPLE_RATE = 16000
+/** The rate every analysis downstream assumes, since the ASR is fed at it. */
+export const TARGET_SAMPLE_RATE = 16000
 
 /** Decodes a recorded audio Blob into mono 16kHz PCM, the format Whisper expects. */
 export async function decodeToPcm16k(blob: Blob): Promise<Float32Array> {

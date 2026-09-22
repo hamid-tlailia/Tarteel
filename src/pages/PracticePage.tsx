@@ -17,6 +17,7 @@ import { detectQalqalahIssues, type QalqalahAlert } from '../lib/qalqalah'
 import { collapseRepeatedWords } from '../lib/repetition'
 import { scoreTranscriptMatch } from '../lib/transcriptMatch'
 import { buildCoachTips } from '../lib/coach'
+import { detectGhunnahNasalityAlerts, measureWordTimbre, type NasalityAlert } from '../lib/nasality'
 import {
   bucketByAyah,
   buildWordVerdicts,
@@ -28,7 +29,7 @@ import {
 import { LiveTajweedTracker, type LiveSnapshot, type LiveWordResult } from '../lib/liveTracker'
 import { expectedDurationBreakdown } from '../lib/wordTiming'
 import { useWhisper } from '../asr/useWhisper'
-import { decodeToPcm16k, MicRecorder, trimSilence } from '../asr/audio'
+import { decodeToPcm16k, MicRecorder, TARGET_SAMPLE_RATE, trimSilence } from '../asr/audio'
 import type { TimedChunk } from '../asr/whisper.worker'
 import { useProgressStore } from '../store/progressStore'
 
@@ -56,6 +57,13 @@ interface WordDiagnostic {
   measuredMs: number | null
   expectedMs: number
   expectedWithoutMaddMs: number
+  /** How bottom-heavy the word sounded, in dB — the nasality evidence. See spectral.ts. */
+  nasalDb: number | null
+  /** The centre of gravity of the word's F2 region, in Hz, which tracks how far back the
+   * tongue sat. Reported only: telling tafkhīm from tarqīq by it would need to know which
+   * *letter* each frame belongs to, and word-level alignment does not. See the note in
+   * applyResult. */
+  centroidHz: number | null
 }
 
 function vibrate(pattern: number | number[]) {
@@ -369,6 +377,7 @@ export function PracticePage() {
   const [wordConfidences, setWordConfidences] = useState<number[] | null>(null)
   const [acousticAlerts, setAcousticAlerts] = useState<AcousticAlert[]>([])
   const [qalqalahAlerts, setQalqalahAlerts] = useState<QalqalahAlert[]>([])
+  const [nasalityAlerts, setNasalityAlerts] = useState<NasalityAlert[]>([])
   const [micError, setMicError] = useState<string | null>(null)
   const [liveSnapshot, setLiveSnapshot] = useState<LiveSnapshot | null>(null)
   const [passageMatch, setPassageMatch] = useState(0)
@@ -449,14 +458,16 @@ export function PracticePage() {
       wrongRefIndices: wordVerdicts.filter((v) => v.status === 'wrong').map((v) => v.refIndex),
       acousticAlerts,
       qalqalahAlerts,
+      nasalityAlerts,
     })
-  }, [wordVerdicts, referenceWords, acousticAlerts, qalqalahAlerts])
+  }, [wordVerdicts, referenceWords, acousticAlerts, qalqalahAlerts, nasalityAlerts])
 
   function resetResult() {
     setAligned(null)
     setWordConfidences(null)
     setAcousticAlerts([])
     setQalqalahAlerts([])
+    setNasalityAlerts([])
     setHypothesis(null)
     setLiveSnapshot(null)
     setPassageMatch(0)
@@ -528,6 +539,12 @@ export function PracticePage() {
 
     const verdicts = buildWordVerdicts(result, resultConfidences, referenceWords.length, ayahRanges)
 
+    // What the words actually *sounded* like, as opposed to how long they took. This is the
+    // only evidence that can settle a ghunnah on a short word: two ḥarakāt of nasal sound
+    // fit inside the error in the word boundaries themselves, so «عَمَّ» recited without one
+    // is, to a clock, a fast «عَمَّ» recited with one. See spectral.ts and nasality.ts.
+    const timbre = resultTimings ? measureWordTimbre(audioForAnalysis, TARGET_SAMPLE_RATE, resultTimings) : []
+
     // The raw numbers behind every verdict. The thresholds these feed are reasoned rather
     // than measured — there is no corpus of real recitations to calibrate them against — so
     // the panel that shows this is how a real attempt on a real device gets turned into
@@ -544,6 +561,8 @@ export function PracticePage() {
           measuredMs: timing ? Math.round((timing[1] - timing[0]) * 1000) : null,
           expectedMs: expected.total,
           expectedWithoutMaddMs: expected.withoutMadd,
+          nasalDb: timbre[i]?.peakNasalDb ?? null,
+          centroidHz: timbre[i]?.centroidHz ?? null,
         }
       }),
     )
@@ -555,10 +574,14 @@ export function PracticePage() {
       ? detectMaddDurationAlertsForced(referenceWords, resultTimings, correctRefIndices)
       : detectMaddDurationAlertsFromFreeDecode(result, referenceWords, collapsed.chunks, correctRefIndices)
     const qalqalah = resultTimings ? detectQalqalahIssues(audioForAnalysis, referenceWords, resultTimings, correctRefIndices) : []
+    // Judged against this reciter's own non-nasal words in this same recording — absolute
+    // levels say nothing across microphones and voices.
+    const nasality = detectGhunnahNasalityAlerts(referenceWords, timbre, correctRefIndices)
     setAcousticAlerts(acoustic)
     setQalqalahAlerts(qalqalah)
+    setNasalityAlerts(nasality)
 
-    if (verdicts.some((v) => v.status === 'wrong') || acoustic.length > 0 || qalqalah.length > 0) {
+    if (verdicts.some((v) => v.status === 'wrong') || acoustic.length > 0 || qalqalah.length > 0 || nasality.length > 0) {
       vibrate([80, 60, 80])
     }
 
@@ -970,6 +993,33 @@ export function PracticePage() {
             </div>
           )}
 
+          {nasalityAlerts.length > 0 && (
+            <div>
+              <h3 className="mb-3 font-display text-base font-bold text-ghunnah">👃 تنبيهات صوتية تجريبية (الغُنّة)</h3>
+              <ul className="space-y-2.5">
+                {nasalityAlerts.map((a) => (
+                  <li
+                    key={a.refIndex}
+                    className="rounded-xl border border-ghunnah/40 bg-ghunnah-soft p-3.5 text-sm leading-relaxed text-ghunnah"
+                  >
+                    {a.severity === 'severe' ? (
+                      <>
+                        كلمة <span className="font-quran font-bold">«{a.word}»</span> فيها{' '}
+                        {TAJWEED_RULE_MAP[a.rule].nameAr}، لكن صوتها خرج من الفم وحده — لم يظهر فيها رنين الخيشوم
+                        مقارنةً ببقية كلماتك في هذا التسجيل.
+                      </>
+                    ) : (
+                      <>
+                        رنين الخيشوم في <span className="font-quran font-bold">«{a.word}»</span> جاء خافتًا بالنسبة
+                        لبقية قراءتك — {TAJWEED_RULE_MAP[a.rule].nameAr} يحتاج غُنّة أوضح.
+                      </>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+
           {qalqalahAlerts.length > 0 && (
             <div>
               <h3 className="mb-3 font-display text-base font-bold text-qalqalah">💥 تنبيهات صوتية تجريبية (القلقلة)</h3>
@@ -994,7 +1044,10 @@ export function PracticePage() {
                   تطابق المقطع ككل: {Math.round(passageMatch * 100)}% · رسم النص المعتمد للمطابقة الصوتية:{' '}
                   {orthographyVariant ?? 'غير متاح'} · إشارة الثقة:{' '}
                   {isConfidenceUsable(wordConfidences) ? 'صالحة' : 'مهمَلة (مسطّحة قرب الصفر)'}. «الثقة» احتمال النموذج
-                  للكلمة، و«المقيس/المتوقع» زمنها بالملي ثانية.
+                  للكلمة، و«المقيس/المتوقع» زمنها بالملي ثانية. و«الغُنّة» رجحان
+                  الطاقة في الترددات المنخفضة بالديسيبل — يُقارَن بكلماتك غير الأنفية في التسجيل نفسه، لا بقيمة
+                  مطلقة. و«مركز F2» موضع اللسان بالهرتز: يُعرَض للاطّلاع فقط، لأنّ الحكم به على التفخيم والترقيق
+                  يحتاج محاذاة على مستوى الحرف لا الكلمة.
                 </p>
                 <table className="w-full text-right text-xs" dir="rtl">
                   <thead className="text-faint">
@@ -1005,6 +1058,8 @@ export function PracticePage() {
                       <th className="pb-1.5 font-bold">المقيس</th>
                       <th className="pb-1.5 font-bold">المتوقع</th>
                       <th className="pb-1.5 font-bold">بلا مدّ</th>
+                      <th className="pb-1.5 font-bold">الغُنّة</th>
+                      <th className="pb-1.5 font-bold">مركز F2</th>
                     </tr>
                   </thead>
                   <tbody className="font-mono text-muted">
@@ -1016,6 +1071,8 @@ export function PracticePage() {
                         <td className="py-1.5">{d.measuredMs === null ? '—' : d.measuredMs}</td>
                         <td className="py-1.5">{d.expectedMs}</td>
                         <td className="py-1.5">{d.expectedWithoutMaddMs}</td>
+                        <td className="py-1.5">{d.nasalDb === null ? '—' : d.nasalDb.toFixed(1)}</td>
+                        <td className="py-1.5">{d.centroidHz === null ? '—' : Math.round(d.centroidHz)}</td>
                       </tr>
                     ))}
                   </tbody>

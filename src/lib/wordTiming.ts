@@ -50,7 +50,8 @@ const MADD_OPTIONAL_EXTRA_HARAKAT: Partial<Record<TajweedRuleId, number>> = {
   madda_leen: 4, // follows the ʿāriḍ it accompanies
 }
 
-const GHUNNA_RULES = new Set<TajweedRuleId>([
+/** Rules performed as a held nasal sound. Shared with the checks that measure it. */
+export const GHUNNA_RULES = new Set<TajweedRuleId>([
   'ghunnah',
   'ikhafa',
   'ikhafa_shafawi',

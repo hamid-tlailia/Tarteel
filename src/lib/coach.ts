@@ -2,6 +2,7 @@ import { normalizeArabic } from './arabicText'
 import { TAJWEED_RULE_MAP, type WordWithRules } from './tajweed'
 import type { AcousticAlert } from './acousticTajweed'
 import type { QalqalahAlert } from './qalqalah'
+import type { NasalityAlert } from './nasality'
 import type { TajweedRuleId } from '../types/quran'
 
 /**
@@ -41,13 +42,35 @@ export function buildCoachTips({
   wrongRefIndices,
   acousticAlerts,
   qalqalahAlerts,
+  nasalityAlerts = [],
 }: {
   referenceWords: WordWithRules[]
   wrongRefIndices: number[]
   acousticAlerts: AcousticAlert[]
   qalqalahAlerts: QalqalahAlert[]
+  nasalityAlerts?: NasalityAlert[]
 }): CoachTip[] {
   const tips: CoachTip[] = []
+
+  // A ghunnah can fail two different ways, and the reciter needs to be told which. The
+  // duration check says it was not held long enough; this one says the nasal sound was not
+  // there at all, however long the word took. When both fire on the same word the length is
+  // beside the point, so the sound wins and the duration tip is dropped below.
+  const nasalityByIndex = new Set(nasalityAlerts.map((a) => a.refIndex))
+  for (const alert of nasalityAlerts) {
+    const word = plain(alert.word)
+    const ruleName = TAJWEED_RULE_MAP[alert.rule]?.nameAr ?? 'الغُنّة'
+    const severe = alert.severity === 'severe'
+    tips.push({
+      key: `nasality-${alert.refIndex}`,
+      word,
+      title: severe ? 'لم يظهر صوت الغُنّة' : 'صوت الغُنّة ضعيف',
+      action: severe
+        ? `«${word}» فيها ${ruleName}، لكن صوتها خرج من الفم وحده ولم يُسمَع فيها رنين الخيشوم. أغلِق الفم على الحرف وأخرِج الصوت من الأنف حتى تحسّ برنّة فيه، وأمسكها مقدار حركتين.`
+        : `رنين الخيشوم في «${word}» جاء خافتًا بالنسبة لبقية قراءتك. ارفع الغُنّة قليلًا حتى تتميّز عن الحروف المجاورة.`,
+      severity: severe ? 'high' : 'medium',
+    })
+  }
 
   for (const alert of acousticAlerts) {
     const word = plain(alert.word)
@@ -56,6 +79,8 @@ export function buildCoachTips({
     const severe = alert.severity === 'severe'
 
     if (alert.kind === 'ghunnah') {
+      // Already told, more precisely, that the sound itself was missing.
+      if (nasalityByIndex.has(alert.refIndex)) continue
       tips.push({
         key,
         word,
