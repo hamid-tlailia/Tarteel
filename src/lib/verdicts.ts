@@ -150,7 +150,23 @@ export function buildWordVerdicts(
     const isOutlier = confidence < outlierFloor
     const belowFloor = confidence < CONFIDENCE_ABSOLUTE_FLOOR
     const acousticDoubt = isOutlier || belowFloor
-    const wrong = (acousticDoubt && textDisagrees) || (isOutlier && belowFloor)
+
+    /*
+     * Both signals must agree before a word is called wrong.
+     *
+     * There used to be a second clause — `|| (isOutlier && belowFloor)` — letting collapsed
+     * confidence convict on its own. Since a word whose confidence collapses *and* whose
+     * text disagrees is already caught by the first clause, that second one could only ever
+     * fire where the free decode positively said the word was right: a single pessimistic
+     * signal overruling a second signal that disagreed with it, which is exactly what this
+     * file's design is written to prevent.
+     *
+     * It fell hardest on the first word of a recitation, where forced-decoding confidence is
+     * lowest by construction: the decoder has nothing but the prompt tokens for context, and
+     * the recorder often clips the onset of a reciter who starts immediately. «بِسْمِ» came
+     * back marked wrong in a recitation of al-Fātiḥah whose other three words were fine.
+     */
+    const wrong = acousticDoubt && textDisagrees
 
     return { refIndex: i, status: wrong ? 'wrong' : 'correct', confidence, hypGuess, freeStatus }
   })

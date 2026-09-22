@@ -275,7 +275,7 @@ export function detectMaddDurationAlertsFromFreeDecode(
   correctRefIndices: Set<number>,
   paceId?: PaceId,
 ): AcousticAlert[] {
-  if (chunks.length < 3) return []
+  if (chunks.length === 0) return []
 
   /** Measured duration in ms for the reference word an alignment entry points at. */
   const measuredMsOf = (w: AlignedWord): number | null => {
@@ -318,9 +318,13 @@ export function detectMaddDurationAlertsFromFreeDecode(
 
     const slot = ratioIndex.get(w.refIndex)
     const tempoScale = slot === undefined ? null : paceExcluding(ratios, slot)
-    if (tempoScale === null) continue
 
-    const judged = judgeHold(refWord, held.kind, measuredMs, tempoScale, paceId, null)
+    // Same reasoning as the forced path: with no other word to set the pace, the physical
+    // floors are the only evidence — and they need none. Both a `chunks.length < 3` guard
+    // and an early return here used to make this whole check silently do nothing on a short
+    // passage, which is how «الٓمٓ» recited with no madd at all came back a flawless 100%:
+    // its forced timings were unavailable, so the fallback ran, and the fallback refused.
+    const judged = judgeHold(refWord, held.kind, measuredMs, tempoScale ?? 1, paceId, null, tempoScale === null)
     if (!judged) continue
 
     alerts.push({
