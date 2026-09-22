@@ -19,12 +19,12 @@ export function Layout() {
           <NavLink to="/" className="group flex items-center gap-2.5">
             <span
               aria-hidden
-              className="flex h-10 w-10 items-center justify-center rounded-xl border border-gold/50 bg-surface font-display text-lg text-gold shadow-sm transition group-hover:border-gold"
+              className="flex h-10 w-10 items-center justify-center rounded-xl border border-gold/50 bg-surface font-brand text-lg text-gold shadow-sm transition group-hover:border-gold"
             >
               ٱ
             </span>
             <span className="leading-none">
-              <span className="text-gilded block font-display text-2xl font-bold tracking-wide">ورتل</span>
+              <span className="text-gilded block font-brand text-2xl font-bold tracking-wide">ورتل</span>
               <span className="mt-1 block text-[10px] font-medium tracking-[0.3em] text-faint">
                 TAJWEED · ذكاء اصطناعي
               </span>
@@ -42,9 +42,9 @@ export function Layout() {
       <footer className="hidden px-4 pb-28 pt-2 text-center sm:block sm:pb-6">
         <div className="hair-gold mx-auto mb-4 max-w-md" />
         <p className="text-xs leading-relaxed text-faint">
-          <span className="font-display text-sm text-gold">﴾</span>{' '}
+          <span className="font-brand text-sm text-gold">﴾</span>{' '}
           النصوص القرآنية وأحكام التجويد مصدرها alquran.cloud — يعمل التعرّف الصوتي بالكامل داخل متصفحك دون رفع صوتك لأي
-          خادم. <span className="font-display text-sm text-gold">﴿</span>
+          خادم. <span className="font-brand text-sm text-gold">﴿</span>
         </p>
       </footer>
 

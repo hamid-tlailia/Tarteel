@@ -8,9 +8,26 @@
  */
 
 @theme inline {
-  --font-quran: "Amiri Quran", "Amiri", serif;
-  --font-display: "Aref Ruqaa", "Amiri", serif;
-  --font-sans: "Tajawal", ui-sans-serif, system-ui, sans-serif;
+  /*
+   * Legibility first, ornament second.
+   *
+   * Every Arabic face here was chosen against the others on a phone-width dark screen, at
+   * the sizes this app actually uses (see the comparison that drove it).
+   *
+   * Aref Ruqaa set all 35 headings, and Ruqaa is a slanted calligraphic hand: beautiful as a
+   * wordmark, hard work as an interface. It now sets the wordmark alone.
+   *
+   * Scheherazade New replaces Amiri Quran for the muṣḥaf text. It renders noticeably larger
+   * and heavier at the same size, and places the Uthmani marks this app depends on more
+   * clearly — the small mīm of iqlāb, the dagger alif, the Uthmani tanwīn. Both faces cover
+   * every one of those codepoints (checked glyph by glyph, no tofu in either), so this costs
+   * nothing in correctness; Amiri Quran stays as the fallback.
+   */
+  --font-quran: "Scheherazade New", "Amiri Quran", "Amiri", serif;
+  --font-display: "IBM Plex Sans Arabic", "Tajawal", ui-sans-serif, system-ui, sans-serif;
+  --font-sans: "IBM Plex Sans Arabic", "Tajawal", ui-sans-serif, system-ui, sans-serif;
+  /** The wordmark and the ornamental ayah brackets — the one place the script hand belongs. */
+  --font-brand: "Aref Ruqaa", "Amiri", serif;
 
   --color-bg: var(--c-bg);
   --color-bg-deep: var(--c-bg-deep);
@@ -302,6 +319,10 @@ body::before {
 
 .font-display {
   font-family: var(--font-display);
+}
+
+.font-brand {
+  font-family: var(--font-brand);
 }
 
 /* Gilded headline text */
