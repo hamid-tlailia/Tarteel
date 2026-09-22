@@ -55,8 +55,35 @@ export interface LiveSnapshot {
 
 /** Longest pause between two voiced stretches still counted as one word (ms). */
 const GAP_MS = 150
+
+/**
+ * Word boundaries in *joined* recitation, where there is no pause to segment on.
+ *
+ * Silence was the only boundary this tracker knew, and tarteel has almost none: «بِسْمِ ٱللَّهِ
+ * ٱلرَّحْمَـٰنِ ٱلرَّحِيمِ» is one unbroken stream of voice. So the cursor advanced only when the
+ * reciter stopped to breathe, and otherwise waited for a budget of expected×2.4+900ms to run
+ * out — 2316ms for «بِسْمِ», a word recited in about 325. Measured on a reciter quicker than
+ * the selected pace, the display sat two whole words behind the voice.
+ *
+ * A juncture between joined words does not fall to silence, but it does fall: the energy
+ * dips against the word's own recent loudness as one word closes and the next opens. That
+ * relative dip is the boundary, and unlike a duration budget it cannot drift with the
+ * reciter's speed.
+ */
+const DIP_RATIO = 0.45
+const DIP_MS = 40
+/** A dip cannot end a word that has barely started — that is a syllable, not a boundary. */
+const MIN_WORD_FOR_DIP_MS = 160
 /** Safety cap: force-close a word that's been open far longer than any madd could justify. */
-const MAX_OVER_MS = 900
+/**
+ * The last-resort budget, now that dips carry the segmentation.
+ *
+ * It exists only for a reciter whose voice never dips — a single sustained sound across
+ * several words — and it is measured against the pace the *other* words established rather
+ * than against a fixed multiple, so it cannot be systematically wrong for a fast or slow
+ * reciter the way expected×2.4+900ms was.
+ */
+const BUDGET_OVERRUN = 2.2
 const START_THR = 0.012
 /**
  * The longest gap between two energy frames still counted as elapsed recitation.
@@ -123,6 +150,10 @@ export class LiveTajweedTracker {
    * gets word segmentation and the whole-word duration check; it simply gets no bars.
    */
   private sawSamples = false
+  /** The loudest this word has been, decaying slowly — the reference a dip is measured against. */
+  private wordPeak = 0
+  /** How long the level has stayed below that reference. */
+  private dipMs = 0
   private tau: number
   private onWord: ((index: number, result: LiveWordResult) => void) | null
 
@@ -203,6 +234,8 @@ export class LiveTajweedTracker {
         this.results[this.cursor] = { status: 'current', measuredMs: 0 }
         this.requiredMet = false
         this.holds.reset()
+        this.wordPeak = rms
+        this.dipMs = 0
         this.rev++
       }
       this.voicedMs += dt
@@ -220,15 +253,29 @@ export class LiveTajweedTracker {
         }
       }
 
+      // Track how loud this word has been, so a dip can be judged against it rather than
+      // against an absolute level that varies with microphone and voice.
+      this.wordPeak = Math.max(rms, this.wordPeak * 0.997)
+
+      if (rms < this.wordPeak * DIP_RATIO) {
+        this.dipMs += dt
+        if (this.dipMs >= DIP_MS && this.voicedMs >= MIN_WORD_FOR_DIP_MS) {
+          this.closeCurrent('boundary')
+          return
+        }
+      } else {
+        this.dipMs = 0
+      }
+
       const exp = this.expectedMs[this.cursor]
-      if (this.voicedMs > exp * 2.4 + MAX_OVER_MS) this.closeCurrent()
+      if (exp > 0 && this.voicedMs > exp * this.scale * BUDGET_OVERRUN) this.closeCurrent('budget')
     } else if (this.inWord) {
       this.silenceMs += dt
-      if (this.silenceMs >= GAP_MS) this.closeCurrent()
+      if (this.silenceMs >= GAP_MS) this.closeCurrent('boundary')
     }
   }
 
-  private closeCurrent(): void {
+  private closeCurrent(reason: 'boundary' | 'budget' = 'boundary'): void {
     const i = this.cursor
     if (i < 0 || i >= this.words.length) {
       this.inWord = false
@@ -245,7 +292,11 @@ export class LiveTajweedTracker {
     // Read the holds before the tracker is reset for the next word.
     const meters = this.metersFor(i, true)
     const scaleBefore = this.scale
-    if (measured >= MIN_VOICED_MS && this.expectedMs[i] > 0) {
+    // Only a real boundary — a dip or a pause — tells us how long this reciter takes over a
+    // word. A word closed because its budget ran out lasted exactly as long as the budget,
+    // so feeding that back would drag the pace toward the budget and then lengthen the next
+    // budget in turn: the estimate would chase itself instead of the voice.
+    if (reason === 'boundary' && measured >= MIN_VOICED_MS && this.expectedMs[i] > 0) {
       this.ratios.push(measured / this.expectedMs[i])
       if (this.ratios.length >= 2) this.scale = Math.min(1.8, Math.max(0.6, median(this.ratios)))
     }
@@ -274,6 +325,8 @@ export class LiveTajweedTracker {
     this.inWord = false
     this.voicedMs = 0
     this.silenceMs = 0
+    this.wordPeak = 0
+    this.dipMs = 0
     this.rev++
     this.onWord?.(i, this.results[i])
   }
