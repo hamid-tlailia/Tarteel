@@ -4,6 +4,7 @@ import type { AlignedWord } from './alignment'
 import type { TimedChunk } from '../asr/whisper.worker'
 import { expectedDurationBreakdown, fastestPlausibleDuration, measuredHarakaMs } from './wordTiming'
 import { detectPace, paceOf, type PaceId, type PaceProfile } from './recitationPace'
+import { referenceExpectations, type ReferenceExpectation, type ReferenceTiming } from './referenceTiming'
 
 /**
  * Heuristic acoustic check for madd (elongation) rules — the step beyond plain text
@@ -100,10 +101,17 @@ function judgeHold(
   measuredMs: number,
   tempoScale: number,
   paceId: PaceId | undefined,
+  /** What an accredited reciter actually gave this word, already in the learner's tempo.
+   * When present it replaces the theoretical duration below: a real performance of the
+   * ruling is better evidence than any constant reasoned from the books. */
+  reference: ReferenceExpectation | null,
 ): { severity: 'mild' | 'severe'; minimumMs: number } | null {
-  const expected = expectedDurationBreakdown(refWord, paceId)
-  const unheld = (kind === 'madd' ? expected.withoutMadd : expected.withoutGhunnah) * tempoScale
-  const obligation = expected.total * tempoScale - unheld
+  const theory = expectedDurationBreakdown(refWord, paceId)
+  const expected = reference
+    ? { total: reference.totalMs, withoutMadd: reference.withoutMaddMs, withoutGhunnah: reference.withoutGhunnahMs }
+    : { total: theory.total * tempoScale, withoutMadd: theory.withoutMadd * tempoScale, withoutGhunnah: theory.withoutGhunnah * tempoScale }
+  const unheld = kind === 'madd' ? expected.withoutMadd : expected.withoutGhunnah
+  const obligation = expected.total - unheld
   if (obligation <= 0) return null
 
   const performed = (measuredMs - unheld) / obligation
@@ -169,7 +177,12 @@ export function detectMaddDurationAlertsForced(
   wordTimings: ([number, number] | null)[],
   correctRefIndices: Set<number>,
   paceId?: PaceId,
+  /** An accredited reciter's own timings for this same passage, when one has been aligned. */
+  reference?: ReferenceTiming | null,
 ): AcousticAlert[] {
+  const referenced = reference
+    ? referenceExpectations(referenceWords, wordTimings, reference, paceId)
+    : null
   // Each word is judged against *its own* expected duration (syllable count + the rules it
   // carries), not against a flat median of every word in the passage.
   //
@@ -208,7 +221,7 @@ export function detectMaddDurationAlertsForced(
     const tempoScale = slot === undefined ? null : paceExcluding(ratios, slot)
     if (tempoScale === null) return
 
-    const judged = judgeHold(refWord, held.kind, measuredMs, tempoScale, paceId)
+    const judged = judgeHold(refWord, held.kind, measuredMs, tempoScale, paceId, referenced?.[i] ?? null)
     if (!judged) return
 
     alerts.push({
@@ -282,7 +295,7 @@ export function detectMaddDurationAlertsFromFreeDecode(
     const tempoScale = slot === undefined ? null : paceExcluding(ratios, slot)
     if (tempoScale === null) continue
 
-    const judged = judgeHold(refWord, held.kind, measuredMs, tempoScale, paceId)
+    const judged = judgeHold(refWord, held.kind, measuredMs, tempoScale, paceId, null)
     if (!judged) continue
 
     alerts.push({

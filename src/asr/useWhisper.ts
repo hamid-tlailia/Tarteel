@@ -34,7 +34,15 @@ export function useWhisper() {
   const [progress, setProgress] = useState(0)
   const [progressLabel, setProgressLabel] = useState('')
   const [error, setError] = useState<string | null>(null)
-  const pendingRef = useRef<{ resolve: (result: TranscribeResult) => void; reject: (err: Error) => void } | null>(null)
+  /**
+   * Outstanding jobs by request id.
+   *
+   * A single pending slot was enough while the only job was "transcribe what the reciter
+   * just recorded". It is not enough now that the app also aligns an accredited reciter's
+   * recording in the background: the two would overlap, and whichever replied second would
+   * resolve the other's promise with the wrong kind of result.
+   */
+  const pendingRef = useRef(new Map<number, { resolve: (value: never) => void; reject: (err: Error) => void }>())
   const requestIdRef = useRef(0)
 
   useEffect(() => {
@@ -61,19 +69,34 @@ export function useWhisper() {
         setStatus('ready')
         setProgress(100)
       } else if (data.type === 'result') {
-        pendingRef.current?.resolve({
+        const job = pendingRef.current.get(data.requestId)
+        pendingRef.current.delete(data.requestId)
+        ;(job?.resolve as ((r: TranscribeResult) => void) | undefined)?.({
           text: data.text as string,
           chunks: (data.chunks as TimedChunk[]) ?? [],
           wordConfidences: (data.wordConfidences as number[] | null) ?? null,
           wordTimings: (data.wordTimings as ([number, number] | null)[] | null) ?? null,
           orthographyVariant: (data.orthographyVariant as string | null) ?? null,
         })
-        pendingRef.current = null
+      } else if (data.type === 'aligned') {
+        const job = pendingRef.current.get(data.requestId)
+        pendingRef.current.delete(data.requestId)
+        ;(job?.resolve as ((r: ([number, number] | null)[] | null) => void) | undefined)?.(
+          (data.wordTimings as ([number, number] | null)[] | null) ?? null,
+        )
       } else if (data.type === 'error') {
-        setError(data.error)
-        setStatus((s) => (s === 'loading' ? 'error' : s))
-        pendingRef.current?.reject(new Error(data.error))
-        pendingRef.current = null
+        // An error carrying a request id belongs to that job alone; one without is the
+        // model itself failing to load, which is the whole feature's problem.
+        if (typeof data.requestId === 'number') {
+          const job = pendingRef.current.get(data.requestId)
+          pendingRef.current.delete(data.requestId)
+          job?.reject(new Error(data.error))
+        } else {
+          setError(data.error)
+          setStatus((s) => (s === 'loading' ? 'error' : s))
+          for (const job of pendingRef.current.values()) job.reject(new Error(data.error))
+          pendingRef.current.clear()
+        }
       }
     }
 
@@ -83,10 +106,22 @@ export function useWhisper() {
   const transcribe = useCallback((audio: Float32Array, referenceWords: string[]): Promise<TranscribeResult> => {
     return new Promise((resolve, reject) => {
       const requestId = ++requestIdRef.current
-      pendingRef.current = { resolve, reject }
+      pendingRef.current.set(requestId, { resolve: resolve as (v: never) => void, reject })
       workerRef.current?.postMessage({ type: 'transcribe', audio, referenceWords, requestId }, [audio.buffer])
     })
   }, [])
 
-  return { status, progress, progressLabel, error, load, transcribe }
+  /** Forced alignment only — what an accredited reciter's recording gives each word. */
+  const align = useCallback(
+    (audio: Float32Array, referenceWords: string[]): Promise<([number, number] | null)[] | null> => {
+      return new Promise((resolve, reject) => {
+        const requestId = ++requestIdRef.current
+        pendingRef.current.set(requestId, { resolve: resolve as (v: never) => void, reject })
+        workerRef.current?.postMessage({ type: 'align', audio, referenceWords, requestId }, [audio.buffer])
+      })
+    },
+    [],
+  )
+
+  return { status, progress, progressLabel, error, load, transcribe, align }
 }

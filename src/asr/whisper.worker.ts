@@ -53,6 +53,10 @@ let transcriberPromise: Promise<AutomaticSpeechRecognitionPipeline> | null = nul
 type IncomingMessage =
   | { type: 'load' }
   | { type: 'transcribe'; audio: Float32Array; referenceWords: string[]; requestId: number }
+  /** Forced alignment only, with no free decode — used on an accredited reciter's recording
+   * to learn how long that reciter actually gives each word. The text is already known, so
+   * the decode half would only cost time. */
+  | { type: 'align'; audio: Float32Array; referenceWords: string[]; requestId: number }
 
 type ProgressInfo = { status: string; file?: string; progress?: number; loaded?: number; total?: number }
 export interface TimedChunk {
@@ -271,6 +275,26 @@ self.onmessage = async (event: MessageEvent<IncomingMessage>) => {
       // same cached rejected promise forever.
       transcriberPromise = null
       self.postMessage({ type: 'error', error: (err as Error).message })
+    }
+    return
+  }
+
+  if (msg.type === 'align') {
+    try {
+      const transcriber = await (transcriberPromise ?? Promise.reject(new Error('النموذج غير محمّل بعد')))
+      let best: ForcedAlignmentResult | null = null
+      for (const variant of ORTHOGRAPHY_VARIANTS) {
+        try {
+          const attempt = await scoreAndAlignReferenceWords(transcriber, msg.audio, msg.referenceWords, variant)
+          if (!best || attempt.meanConfidence > best.meanConfidence) best = attempt
+          if (attempt.meanConfidence >= CONFIDENT_ENOUGH_TO_STOP) break
+        } catch {
+          // This spelling did not work; the next one may.
+        }
+      }
+      self.postMessage({ type: 'aligned', requestId: msg.requestId, wordTimings: best?.wordTimings ?? null })
+    } catch (err) {
+      self.postMessage({ type: 'error', requestId: msg.requestId, error: (err as Error).message })
     }
     return
   }

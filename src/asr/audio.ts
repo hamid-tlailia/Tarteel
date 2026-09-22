@@ -1,7 +1,8 @@
 /** The rate every analysis downstream assumes, since the ASR is fed at it. */
 export const TARGET_SAMPLE_RATE = 16000
 
-/** Decodes a recorded audio Blob into mono 16kHz PCM, the format Whisper expects. */
+/** Decodes a recorded audio Blob into mono 16kHz PCM, the format Whisper expects. Also used
+ * for an accredited reciter's published mp3, which arrives at 128kbps stereo 44.1kHz. */
 export async function decodeToPcm16k(blob: Blob): Promise<Float32Array> {
   const arrayBuffer = await blob.arrayBuffer()
   const AudioCtx = window.AudioContext ?? (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext

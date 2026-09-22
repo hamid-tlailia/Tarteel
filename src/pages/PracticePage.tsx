@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import clsx from 'clsx'
-import { fetchSurahAyahs, fetchSurahList } from '../api/quran'
+import { fetchSurahAyahs, fetchSurahList, setReciter } from '../api/quran'
 import type { Ayah, SurahMeta, TajweedRuleId } from '../types/quran'
 import { TajweedText } from '../components/TajweedText'
 import { PracticeIcon } from '../components/NavIcons'
@@ -16,6 +16,9 @@ import {
   type AcousticAlert,
 } from '../lib/acousticTajweed'
 import { DEFAULT_PACE_ID, PACES, paceOf, type PaceId, type PaceProfile } from '../lib/recitationPace'
+import { DEFAULT_RECITER_ID, RECITERS, reciterOf } from '../lib/reciters'
+import { buildReferenceTiming } from '../lib/referenceRecitation'
+import { followScore, type ReferenceTiming } from '../lib/referenceTiming'
 import { detectQalqalahIssues, type QalqalahAlert } from '../lib/qalqalah'
 import { collapseRepeatedWords } from '../lib/repetition'
 import { scoreTranscriptMatch } from '../lib/transcriptMatch'
@@ -445,10 +448,38 @@ export function PracticePage() {
     null,
   )
   const [showDiagnostics, setShowDiagnostics] = useState(false)
+  /**
+   * The accredited reciter whose reading is the reference. Beyond being the voice played
+   * back, their own timings become the yardstick the learner's madds are judged against —
+   * a performance of the ruling rather than a constant reasoned from the books.
+   */
+  const [reciterId, setReciterId] = useState<string>(() => {
+    try {
+      const stored = localStorage.getItem('wartil-reciter')
+      if (stored && RECITERS.some((r) => r.id === stored)) return stored
+    } catch {
+      // Blocked storage — the default reciter is fine.
+    }
+    return DEFAULT_RECITER_ID
+  })
+  const [reference, setReference] = useState<ReferenceTiming | null>(null)
+  const [referenceState, setReferenceState] = useState<'idle' | 'loading' | 'ready' | 'unavailable'>('idle')
+  const [follow, setFollow] = useState<number | null>(null)
   /** The most recent rule the reciter passed over, shown while they are still reading. */
   const [liveMiss, setLiveMiss] = useState<
     { index: number; rule: TajweedRuleId; kind: 'madd' | 'ghunnah'; severity: 'mild' | 'severe'; at: number } | null
   >(null)
+  useEffect(() => {
+    // The ayah objects carry the reciter's audio URLs, so the data layer has to know before
+    // anything is fetched — and its cache has to be dropped when this changes.
+    setReciter(reciterId)
+    try {
+      localStorage.setItem('wartil-reciter', reciterId)
+    } catch {
+      // Not worth surfacing.
+    }
+  }, [reciterId])
+
   useEffect(() => {
     try {
       localStorage.setItem('wartil-pace', paceId)
@@ -518,6 +549,38 @@ export function PracticePage() {
     [ayahs, fromAyah, toAyah],
   )
 
+  /**
+   * Align the chosen reciter's recording of this passage, in the background, while the
+   * learner is still reading the text and deciding to press record.
+   *
+   * Done ahead of time on purpose: it needs a network fetch and a model pass per ayah, and
+   * making the learner wait for that *after* they finish reciting would put the cost exactly
+   * where it is least welcome. If it is not ready in time, or fails outright, the checks fall
+   * back to the theoretical durations and nothing is lost but the extra precision.
+   */
+  useEffect(() => {
+    if (whisper.status !== 'ready' || selectedAyahs.length === 0) return
+    const controller = new AbortController()
+    setReference(null)
+    setReferenceState('loading')
+    buildReferenceTiming({
+      reciterId,
+      ayahs: selectedAyahs,
+      align: whisper.align,
+      decode: decodeToPcm16k,
+      signal: controller.signal,
+    })
+      .then((result) => {
+        if (controller.signal.aborted) return
+        setReference(result)
+        setReferenceState(result ? 'ready' : 'unavailable')
+      })
+      .catch(() => {
+        if (!controller.signal.aborted) setReferenceState('unavailable')
+      })
+    return () => controller.abort()
+  }, [whisper.status, whisper.align, reciterId, selectedAyahs])
+
   const { referenceWords, ayahRanges } = useMemo(() => {
     const words: WordWithRules[] = []
     const ranges: AyahRange[] = []
@@ -570,6 +633,7 @@ export function PracticePage() {
     setNasalityAlerts([])
     setRecitedPace(null)
     setLiveMiss(null)
+    setFollow(null)
     setHypothesis(null)
     setLiveSnapshot(null)
     setPassageMatch(0)
@@ -674,11 +738,14 @@ export function PracticePage() {
     // Forced-alignment timing (precise, from the known text) is preferred; fall back to
     // the free decode's approximate word timestamps when it isn't available this time.
     const acoustic = resultTimings
-      ? detectMaddDurationAlertsForced(referenceWords, resultTimings, correctRefIndices, paceId)
+      ? detectMaddDurationAlertsForced(referenceWords, resultTimings, correctRefIndices, paceId, reference)
       : detectMaddDurationAlertsFromFreeDecode(result, referenceWords, collapsed.chunks, correctRefIndices, paceId)
     // What the reciter actually read in, whatever they selected — reported back rather than
     // silently graded against the wrong yardstick.
     setRecitedPace(resultTimings ? detectRecitedPace(referenceWords, resultTimings, correctRefIndices, paceId) : null)
+    // How closely the learner's reading follows the shape of the reciter's — proportions,
+    // not speed, so reading slower than the shaykh is not itself a divergence.
+    setFollow(resultTimings && reference ? followScore(referenceWords, resultTimings, reference) : null)
     const qalqalah = resultTimings ? detectQalqalahIssues(audioForAnalysis, referenceWords, resultTimings, correctRefIndices) : []
     // Judged against this reciter's own non-nasal words in this same recording — absolute
     // levels say nothing across microphones and voices.
@@ -896,6 +963,30 @@ export function PracticePage() {
 
         <div className="hair-gold" />
 
+        {/* The reciter is not only the voice played back. Their own recording of this passage
+            is aligned in the background and becomes the yardstick the madds are measured
+            against — what the ruling sounds like performed, rather than a constant. */}
+        <label className="block text-sm">
+          <span className="mb-1.5 flex items-center justify-between gap-2 text-xs font-bold text-faint">
+            <span>القارئ المرجع</span>
+            {referenceState === 'loading' && <span className="text-[10px] font-bold text-faint">…يُحضَّر المرجع</span>}
+            {referenceState === 'ready' && <span className="text-[10px] font-bold text-ok">المرجع جاهز ✓</span>}
+            {referenceState === 'unavailable' && (
+              <span className="text-[10px] font-bold text-muted">تعذّر المرجع — سيُقاس على المقادير النظرية</span>
+            )}
+          </span>
+          <Dropdown
+            label="القارئ المرجع"
+            value={reciterId}
+            onChange={setReciterId}
+            options={RECITERS.map((r) => ({
+              value: r.id,
+              label: r.recommended ? `${r.nameAr} ★` : r.nameAr,
+              hint: r.noteAr,
+            }))}
+          />
+        </label>
+
         {/* The pace is not a difficulty setting. It decides what the rules require: the madd
             ʿāriḍ is two ḥarakāt in ḥadr and six in taḥqīq, and all three readings are sound. */}
         <div>
@@ -923,6 +1014,15 @@ export function PracticePage() {
             })}
           </div>
           <p className="mt-2 text-xs leading-relaxed text-faint">{paceOf(paceId).descriptionAr}</p>
+          {reciterOf(reciterId).pace !== paceId && (
+            <button
+              type="button"
+              onClick={() => setPaceId(reciterOf(reciterId).pace)}
+              className="mt-2 text-xs font-bold text-accent underline decoration-dotted underline-offset-4"
+            >
+              {reciterOf(reciterId).nameAr} يقرأ بمرتبة {paceOf(reciterOf(reciterId).pace).nameAr} — اضبطها مثله
+            </button>
+          )}
         </div>
       </div>
 
@@ -1128,6 +1228,29 @@ export function PracticePage() {
                   وضع احتياطي: مطابقة نصية فقط
                 </span>
               )}
+            </div>
+          )}
+
+          {/* How closely the reading follows the reference reciter's shape. Reported, never
+              scored: a learner reading slower than the shaykh is not diverging, so this
+              compares proportions and deliberately ignores speed. */}
+          {follow !== null && passageMatch >= PASSAGE_MATCH_FLOOR && (
+            <div className="rounded-xl border border-line-soft bg-bg/40 px-4 py-3">
+              <div className="mb-2 flex items-center justify-between gap-3 text-sm">
+                <span className="font-display font-bold text-accent">{Math.round(follow * 100)}٪</span>
+                <span className="font-semibold text-muted">
+                  مطابقة إيقاعك لقراءة {reciterOf(reciterId).nameAr}
+                </span>
+              </div>
+              <div className="h-1.5 w-full overflow-hidden rounded-full bg-line-soft">
+                <div
+                  className="h-full rounded-full bg-accent transition-[width] duration-500"
+                  style={{ width: `${Math.round(follow * 100)}%` }}
+                />
+              </div>
+              <p className="mt-2 text-xs leading-relaxed text-faint">
+                يقيس تناسب مقادير كلماتك بعضها ببعض مقارنةً بالشيخ، لا سرعتك — فالقراءة أبطأ منه بانتظام مطابقة تامة.
+              </p>
             </div>
           )}
 

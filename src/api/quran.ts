@@ -1,9 +1,26 @@
 import { applyDerivedRuleSpans, parseTajweedMarkup } from '../lib/tajweed'
 import type { Ayah, SurahMeta, TajweedRuleId } from '../types/quran'
+import { DEFAULT_RECITER_ID } from '../lib/reciters'
 
 const BASE = 'https://api.alquran.cloud/v1'
-const RECITER = 'ar.alafasy'
 const AUDIO_CDN = 'https://cdn.islamic.network/quran/audio/128'
+
+/**
+ * The reciter whose recording is played back and used as the timing reference.
+ *
+ * Module-level rather than passed through every call because it is a setting, not a
+ * parameter of any one request — and because the ayah objects are cached, so changing it has
+ * to invalidate that cache rather than quietly serve the previous reciter's URLs.
+ */
+const surahCache = new Map<number, Ayah[]>()
+
+let reciterId = DEFAULT_RECITER_ID
+
+export function setReciter(id: string): void {
+  if (id === reciterId) return
+  reciterId = id
+  surahCache.clear()
+}
 
 async function getJson<T>(url: string): Promise<T> {
   const res = await fetch(url)
@@ -22,8 +39,6 @@ export async function fetchSurahList(): Promise<SurahMeta[]> {
   return data
 }
 
-const surahCache = new Map<number, Ayah[]>()
-
 /** Fetches one surah's ayahs with tashkeel + parsed tajweed coloring + reciter audio. */
 export async function fetchSurahAyahs(surahNumber: number): Promise<Ayah[]> {
   const cached = surahCache.get(surahNumber)
@@ -39,7 +54,7 @@ export async function fetchSurahAyahs(surahNumber: number): Promise<Ayah[]> {
     surah: surahNumber,
     text: a.text,
     segments: applyDerivedRuleSpans(parseTajweedMarkup(a.text)),
-    audioUrl: `${AUDIO_CDN}/${RECITER}/${a.number}.mp3`,
+    audioUrl: `${AUDIO_CDN}/${reciterId}/${a.number}.mp3`,
   }))
 
   surahCache.set(surahNumber, ayahs)
@@ -54,7 +69,7 @@ export async function fetchAyah(surahNumber: number, ayahInSurah: number): Promi
 }
 
 export function surahAudioUrl(surahNumber: number): string {
-  return `${AUDIO_CDN}/${RECITER}/${surahNumber}.mp3`
+  return `${AUDIO_CDN}/${reciterId}/${surahNumber}.mp3`
 }
 
 /**
