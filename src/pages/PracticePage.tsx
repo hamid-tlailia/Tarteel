@@ -35,7 +35,7 @@ import {
 import { LiveTajweedTracker, type LiveSnapshot, type LiveWordResult } from '../lib/liveTracker'
 import { expectedDurationBreakdown } from '../lib/wordTiming'
 import { useWhisper } from '../asr/useWhisper'
-import { decodeToPcm16k, MicRecorder, TARGET_SAMPLE_RATE, trimSilence } from '../asr/audio'
+import { conditionForAsr, decodeToPcm16k, MicRecorder, TARGET_SAMPLE_RATE, trimSilence } from '../asr/audio'
 import type { TimedChunk } from '../asr/whisper.worker'
 import { useProgressStore } from '../store/progressStore'
 
@@ -465,6 +465,8 @@ export function PracticePage() {
   const [reference, setReference] = useState<ReferenceTiming | null>(null)
   const [referenceState, setReferenceState] = useState<'idle' | 'loading' | 'ready' | 'unavailable'>('idle')
   const [follow, setFollow] = useState<number | null>(null)
+  /** How loud the recording actually was, before the app scaled it up. */
+  const [inputRms, setInputRms] = useState<number | null>(null)
   /** The most recent rule the reciter passed over, shown while they are still reading. */
   const [liveMiss, setLiveMiss] = useState<
     { index: number; rule: TajweedRuleId; kind: 'madd' | 'ghunnah'; severity: 'mild' | 'severe'; at: number } | null
@@ -634,6 +636,7 @@ export function PracticePage() {
     setRecitedPace(null)
     setLiveMiss(null)
     setFollow(null)
+    setInputRms(null)
     setHypothesis(null)
     setLiveSnapshot(null)
     setPassageMatch(0)
@@ -876,7 +879,11 @@ export function PracticePage() {
     try {
       const blob = await recorderRef.current.stop()
       const pcm = await decodeToPcm16k(blob)
-      const trimmed = trimSilence(pcm)
+      // Remove the DC offset and bring the level up to something the model's front end can
+      // read, now that the browser's automatic gain control is off. See conditionForAsr.
+      const conditioned = conditionForAsr(pcm)
+      setInputRms(conditioned.inputRms)
+      const trimmed = trimSilence(conditioned.pcm)
       if (trimmed.length < MIN_SPEECH_SAMPLES) {
         setMicError('لم يتم رصد صوت واضح. حاول التسجيل مرة أخرى بصوت أعلى وأقرب للميكروفون.')
         return
@@ -1216,6 +1223,19 @@ export function PracticePage() {
                 ما سُمع لا يطابق الآيات المحدّدة، فلا يمكن إعطاء نتيجة. تأكّد أنك تقرأ المقطع المختار، وأن الميكروفون
                 قريب وواضح، ثم أعد المحاولة.
               </p>
+              {/* The likeliest reason, and one nobody can guess from the output: the model is
+                  fine-tuned on Quranic recitation only, so ordinary speech does not come back
+                  as itself — it comes back as the nearest Quranic-sounding text. Saying so
+                  turns a baffling result into an expected one. */}
+              <p className="mt-2.5 border-t border-warn/30 pt-2.5 text-xs leading-relaxed text-warn/90">
+                النموذج مُدرَّب على التلاوة القرآنية وحدها، فإن قرأتَ كلامًا غير قرآني فلن يُكتَب كما نطقتَه، بل
+                سيُحوَّل إلى أقرب نصٍّ قرآني في سمعه — وهذا متوقَّع، لا خلل في الميكروفون.
+              </p>
+              {inputRms !== null && inputRms < 0.015 && (
+                <p className="mt-2 text-xs font-bold leading-relaxed text-warn">
+                  كما أنّ مستوى الصوت كان منخفضًا جدًّا ({(inputRms * 100).toFixed(1)}٪). قرّب الميكروفون وارفع صوتك.
+                </p>
+              )}
             </div>
           ) : (
             <div className="flex flex-wrap items-center gap-4">
