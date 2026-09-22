@@ -1,5 +1,5 @@
 import type { TajweedRuleId, TajweedSegment } from '../types/quran'
-import { deriveUthmaniRules, deriveUthmaniRuleSpans } from './uthmaniRules'
+import { deriveUthmaniRuleSpans } from './uthmaniRules'
 
 /**
  * api.alquran.cloud `quran-tajweed` edition single-letter rule codes → rule ids.
@@ -53,6 +53,26 @@ export function stripTajweedMarkup(raw: string): string {
 }
 
 /**
+ * The one case where a derived rule may replace one the edition marked, rather than only
+ * filling a gap.
+ *
+ * The edition's `p` code is a *class* — alquran.cloud's guide calls it the permissible madd,
+ * covering the jāʾiz munfaṣil, the ʿāriḍ lil-sukūn and the līn alike. So when the derivation
+ * engine works out which member of that class a letter actually belongs to, it is resolving
+ * the edition's own label, not contradicting it. Without this the ʿāriḍ was invisible: it is
+ * the ruling on nearly every ayah-final word, yet the letter it lives on was already spoken
+ * for, so the reader never named it and the lessons could find no ayah to illustrate it with.
+ *
+ * It matters that the name shown matches the name measured. The timing model already treats
+ * that letter as an ʿāriḍ (two ḥarakāt required, four more permitted — see wordTiming.ts);
+ * had the reader gone on calling it a jāʾiz, the meter and the label would have disagreed.
+ */
+const REFINES: Partial<Record<TajweedRuleId, TajweedRuleId>> = {
+  madda_arid: 'madda_permissible',
+  madda_leen: 'madda_permissible',
+}
+
+/**
  * Colours the derived rules at their own letters, alongside the ones the edition marks.
  *
  * The edition's markup wins wherever it says anything: it is authoritative for the letters
@@ -95,9 +115,23 @@ export function applyDerivedRuleSpans(segments: TajweedSegment[]): TajweedSegmen
       i === words.length - 1,
     )
     for (const span of spans) {
+      const refined = REFINES[span.rule]
       for (let k = span.start; k < span.end; k++) {
         const at = w.start + k
-        if (at < rules.length && rules[at] === undefined) rules[at] = span.rule
+        if (at >= rules.length) continue
+        const marked = rules[at]
+        if (marked === undefined) {
+          rules[at] = span.rule
+        } else if (refined !== undefined && marked === refined) {
+          // Take over the whole run the edition marked, not just the madd letter itself —
+          // the kasra or damma that carries it belongs to the same colouring, and splitting
+          // it would paint «ـِي» in two hues for one ruling.
+          let from = at
+          while (from > w.start && rules[from - 1] === refined) from--
+          let to = at
+          while (to + 1 < rules.length && rules[to + 1] === refined) to++
+          for (let m = from; m <= to; m++) rules[m] = span.rule
+        }
       }
     }
   })
@@ -480,9 +514,23 @@ export const TAJWEED_RULE_MAP: Record<TajweedRuleId, TajweedRuleInfo> = Object.f
   TAJWEED_RULES.map((r) => [r.id, r]),
 ) as Record<TajweedRuleId, TajweedRuleInfo>
 
+/** A rule together with the character range of its word that it actually covers. */
+export interface WordRuleSpan {
+  rule: TajweedRuleId
+  start: number
+  end: number
+}
+
 export interface WordWithRules {
   word: string
   rules: TajweedRuleId[]
+  /**
+   * Where in the word each of those rules sits. Optional because plenty of callers (tests,
+   * hand-built fixtures) only care about the rule list — but when it is present, timing can
+   * tell a word carrying two madds on two different letters from one carrying two rulings
+   * about the *same* letter, which must not be added together. See wordTiming.ts.
+   */
+  spans?: WordRuleSpan[]
 }
 
 /** Reconstructs per-word tajweed rule coverage from a segment list (segments can split mid-word). */
@@ -490,11 +538,13 @@ export function segmentsToWords(segments: TajweedSegment[]): WordWithRules[] {
   const words: WordWithRules[] = []
   let currentWord = ''
   let currentRules = new Set<TajweedRuleId>()
+  let currentSpans: WordRuleSpan[] = []
 
   const flush = () => {
-    if (currentWord.length > 0) words.push({ word: currentWord, rules: [...currentRules] })
+    if (currentWord.length > 0) words.push({ word: currentWord, rules: [...currentRules], spans: currentSpans })
     currentWord = ''
     currentRules = new Set()
+    currentSpans = []
   }
 
   for (const seg of segments) {
@@ -504,8 +554,15 @@ export function segmentsToWords(segments: TajweedSegment[]): WordWithRules[] {
       if (/^\s+$/.test(part)) {
         flush()
       } else {
+        const start = currentWord.length
         currentWord += part
-        if (seg.rule) currentRules.add(seg.rule)
+        if (seg.rule) {
+          currentRules.add(seg.rule)
+          // Segments split mid-rule, so extend the run rather than opening a second span.
+          const previous = currentSpans[currentSpans.length - 1]
+          if (previous && previous.rule === seg.rule && previous.end === start) previous.end = currentWord.length
+          else currentSpans.push({ rule: seg.rule, start, end: currentWord.length })
+        }
       }
     }
   }
@@ -524,9 +581,23 @@ export function segmentsToWords(segments: TajweedSegment[]): WordWithRules[] {
  */
 function withDerivedRules(words: WordWithRules[]): WordWithRules[] {
   return words.map((w, i) => {
-    const derived = deriveUthmaniRules(w.word, words[i + 1]?.word ?? '', words[i - 1]?.word ?? '', i === words.length - 1)
+    const spans = deriveUthmaniRuleSpans(
+      w.word,
+      words[i + 1]?.word ?? '',
+      words[i - 1]?.word ?? '',
+      i === words.length - 1,
+    )
     const existing = new Set(w.rules)
-    return { word: w.word, rules: [...w.rules, ...derived.filter((r) => !existing.has(r))] }
+    const derived: TajweedRuleId[] = []
+    for (const span of spans) {
+      if (existing.has(span.rule) || derived.includes(span.rule)) continue
+      derived.push(span.rule)
+    }
+    return {
+      word: w.word,
+      rules: [...w.rules, ...derived],
+      spans: [...(w.spans ?? []), ...spans.filter((s) => !existing.has(s.rule))],
+    }
   })
 }
 

@@ -1,5 +1,5 @@
 import type { TajweedRuleId } from '../types/quran'
-import type { WordWithRules } from './tajweed'
+import type { WordRuleSpan, WordWithRules } from './tajweed'
 
 /**
  * Theory-grounded (rule + syllable count) *absolute* expected word duration, used by the
@@ -80,6 +80,60 @@ const FASTEST_SYLLABLE_MS = 100
 /** A madd or ghunnah ḥaraka is a *held* sound, so it floors higher than a clipped syllable. */
 const FASTEST_HELD_HARAKA_MS = 150
 
+/**
+ * The ḥarakāt a word's held rules actually add, counted per *letter* rather than per rule.
+ *
+ * Several rulings can describe the same letter. An ayah-final «ٱلضَّآلِّينَ» is marked by the
+ * edition with a necessary madd on its alif and a "permissible" madd on its yāʾ, and this
+ * engine derives a madd ʿāriḍ on that same yāʾ. Adding the three up charged the word twelve
+ * ḥarakāt where eight are owed, so a reciter who held it correctly measured barely half the
+ * required duration and was told they had shortened it — Sūrat al-Fātiḥah ended in a false
+ * fault on its last word, every time.
+ *
+ * Rules are therefore grouped by the letters they cover. Rules on genuinely separate letters
+ * still add up (that alif and that yāʾ are two holds, not one). Within a group, the required
+ * length is the *shortest* any applicable ruling permits: the edition's broad "permissible
+ * madd" code covers the munfaṣil, the ʿāriḍ and the līn alike, so when the derivation engine
+ * identifies which one it actually is, that more specific ruling decides the floor — and a
+ * reciter taking the shortest reading a ruling allows has done nothing wrong. The optional
+ * stretch beyond that floor is taken the other way round, as the most any of them permits.
+ *
+ * Without span information (hand-built words, fixtures) every rule is assumed to describe the
+ * same letter, which is the forgiving reading: under-counting only makes the check more
+ * lenient, whereas over-counting invents faults.
+ */
+function heldHarakat(
+  w: WordWithRules,
+  harakatOf: (rule: TajweedRuleId) => number,
+  combine: 'shortest' | 'longest',
+): number {
+  const pick = combine === 'shortest' ? Math.min : Math.max
+  const contributing = w.rules.map((rule) => ({ rule, harakat: harakatOf(rule) })).filter((r) => r.harakat > 0)
+  if (contributing.length === 0) return 0
+  if (contributing.length === 1) return contributing[0].harakat
+
+  const spansOf = (rule: TajweedRuleId): WordRuleSpan[] => (w.spans ?? []).filter((s) => s.rule === rule)
+  if (!w.spans || contributing.some((r) => spansOf(r.rule).length === 0)) {
+    return pick(...contributing.map((r) => r.harakat))
+  }
+
+  // Cluster the rules by letters that touch, then resolve each cluster to a single hold.
+  const groups: { start: number; end: number; harakat: number }[] = []
+  for (const { rule, harakat } of contributing) {
+    for (const span of spansOf(rule)) {
+      const overlapping = groups.filter((g) => span.start < g.end && g.start < span.end)
+      const merged = {
+        start: Math.min(span.start, ...overlapping.map((g) => g.start)),
+        end: Math.max(span.end, ...overlapping.map((g) => g.end)),
+        harakat: overlapping.length === 0 ? harakat : pick(harakat, ...overlapping.map((g) => g.harakat)),
+      }
+      for (const g of overlapping) groups.splice(groups.indexOf(g), 1)
+      groups.push(merged)
+    }
+  }
+  return groups.reduce((sum, g) => sum + g.harakat, 0)
+}
+
 export interface FastestPlausible {
   /** The least time the word's ordinary syllables could occupy. */
   baseMs: number
@@ -89,11 +143,11 @@ export interface FastestPlausible {
 
 /** The fastest this word could physically be recited with its hold actually performed. */
 export function fastestPlausibleDuration(w: WordWithRules, kind: 'madd' | 'ghunnah'): FastestPlausible {
-  let harakat = 0
-  for (const rule of w.rules) {
-    if (kind === 'madd') harakat += MADD_HARAKAT[rule] ?? 0
-    else if (GHUNNA_RULES.has(rule)) harakat += GHUNNA_HARAKAT
-  }
+  const harakat = heldHarakat(
+    w,
+    (rule) => (kind === 'madd' ? (MADD_HARAKAT[rule] ?? 0) : GHUNNA_RULES.has(rule) ? GHUNNA_HARAKAT : 0),
+    'shortest',
+  )
   return {
     baseMs: WORD_FIXED_MS + countSyllables(w.word) * FASTEST_SYLLABLE_MS,
     holdMs: harakat * FASTEST_HELD_HARAKA_MS,
@@ -119,16 +173,13 @@ export interface ExpectedDuration {
 
 export function expectedDurationBreakdown(w: WordWithRules): ExpectedDuration {
   const base = WORD_FIXED_MS + HARAKA_MS * countSyllables(w.word)
-  let maddMs = 0
-  let ghunnaMs = 0
+  const maddMs = heldHarakat(w, (rule) => MADD_HARAKAT[rule] ?? 0, 'shortest') * HARAKA_MS
+  const ghunnaMs = heldHarakat(w, (rule) => (GHUNNA_RULES.has(rule) ? GHUNNA_HARAKAT : 0), 'shortest') * HARAKA_MS
+  // The optional stretch belongs to the same letter as the madd it extends, so it is chosen
+  // the same way: the most any one of the word's madds permits beyond its minimum.
+  const optionalMs = heldHarakat(w, (rule) => MADD_OPTIONAL_EXTRA_HARAKAT[rule] ?? 0, 'longest') * HARAKA_MS
   let otherMs = 0
-  let optionalMs = 0
   for (const rule of w.rules) {
-    const harakat = MADD_HARAKAT[rule]
-    if (harakat) maddMs += harakat * HARAKA_MS
-    const extra = MADD_OPTIONAL_EXTRA_HARAKAT[rule]
-    if (extra) optionalMs += extra * HARAKA_MS
-    if (GHUNNA_RULES.has(rule)) ghunnaMs += GHUNNA_HARAKAT * HARAKA_MS
     if (rule === 'qalqalah') otherMs += QALQALAH_BOUNCE_MS
   }
   const floor = (ms: number) => Math.max(MIN_WORD_MS, Math.round(ms))
