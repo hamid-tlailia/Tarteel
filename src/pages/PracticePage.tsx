@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import clsx from 'clsx'
 import { fetchSurahAyahs, fetchSurahList } from '../api/quran'
-import type { Ayah, SurahMeta } from '../types/quran'
+import type { Ayah, SurahMeta, TajweedRuleId } from '../types/quran'
 import { TajweedText } from '../components/TajweedText'
 import { PracticeIcon } from '../components/NavIcons'
 import { Dropdown } from '../components/Dropdown'
@@ -268,6 +268,33 @@ function LiveWords({
             </span>
           )
         }
+        // A word that owed a hold and did not deliver it is named, not merely coloured —
+        // "أقصر من المتوقع" tells a reciter nothing they can act on, while "لم تكتمل الغُنّة"
+        // does. Timing evidence only: it fires when the word had no room for the hold.
+        if (live.missed) {
+          const ruleName = TAJWEED_RULE_MAP[live.missed.rule]?.nameAr ?? (live.missed.kind === 'ghunnah' ? 'الغُنّة' : 'المدّ')
+          const severe = live.missed.severity === 'severe'
+          return (
+            <span key={i} className="relative inline-block px-1.5 pb-4 pt-0.5">
+              <span
+                className={clsx(
+                  'rounded-lg px-1 ring-1',
+                  severe ? 'bg-danger-soft text-danger ring-danger/50' : 'bg-warn-soft text-warn ring-warn/50',
+                )}
+              >
+                {w.word}
+              </span>
+              <span
+                className={clsx(
+                  'absolute inset-x-0 bottom-0 truncate text-center font-sans text-[9px] font-bold leading-none',
+                  severe ? 'text-danger' : 'text-warn',
+                )}
+              >
+                {severe ? `${ruleName} لم يظهر` : `${ruleName} لم يكتمل`}
+              </span>
+            </span>
+          )
+        }
         if (live.status === 'short' || live.status === 'long') {
           return (
             <span
@@ -418,6 +445,10 @@ export function PracticePage() {
     null,
   )
   const [showDiagnostics, setShowDiagnostics] = useState(false)
+  /** The most recent rule the reciter passed over, shown while they are still reading. */
+  const [liveMiss, setLiveMiss] = useState<
+    { index: number; rule: TajweedRuleId; kind: 'madd' | 'ghunnah'; severity: 'mild' | 'severe'; at: number } | null
+  >(null)
   useEffect(() => {
     try {
       localStorage.setItem('wartil-pace', paceId)
@@ -538,6 +569,7 @@ export function PracticePage() {
     setQalqalahAlerts([])
     setNasalityAlerts([])
     setRecitedPace(null)
+    setLiveMiss(null)
     setHypothesis(null)
     setLiveSnapshot(null)
     setPassageMatch(0)
@@ -679,9 +711,15 @@ export function PracticePage() {
       const tracker = new LiveTajweedTracker(
         referenceWords,
         LIVE_TAU,
-        (_index, status) => {
-          if (status === 'silent') vibrate([100, 50, 100])
-          else if (status === 'short' || status === 'long') vibrate(60)
+        (index, result) => {
+          // A dropped rule gets its own pattern and its own banner: it is the thing worth
+          // interrupting for, and it is what someone deliberately skipping a rule is
+          // waiting to see the app notice.
+          if (result.missed) {
+            vibrate(result.missed.severity === 'severe' ? [120, 60, 120, 60, 120] : [90, 50, 90])
+            setLiveMiss({ index, ...result.missed, at: performance.now() })
+          } else if (result.status === 'silent') vibrate([100, 50, 100])
+          else if (result.status === 'short' || result.status === 'long') vibrate(60)
         },
         paceId,
       )
@@ -920,6 +958,30 @@ export function PracticePage() {
                 </span>
               )}
             </h2>
+
+            {/* Named the moment it happens, while the reciter can still act on it. */}
+            {recording && liveMiss && (
+              <div
+                key={`${liveMiss.index}-${liveMiss.at}`}
+                className={clsx(
+                  'mb-3 flex items-center gap-2.5 rounded-xl border px-3.5 py-2.5 text-sm font-bold animate-[fadeIn_0.2s_ease]',
+                  liveMiss.severity === 'severe'
+                    ? 'border-danger/50 bg-danger-soft text-danger'
+                    : 'border-warn/50 bg-warn-soft text-warn',
+                )}
+                role="status"
+              >
+                <span aria-hidden className="text-base">
+                  {liveMiss.kind === 'ghunnah' ? '👃' : '〰️'}
+                </span>
+                <span>
+                  {TAJWEED_RULE_MAP[liveMiss.rule]?.nameAr ?? 'الحكم'} في{' '}
+                  <span className="font-quran text-base">«{referenceWords[liveMiss.index]?.word ?? ''}»</span>{' '}
+                  {liveMiss.severity === 'severe' ? 'مرّت بلا أداء — أعِدها' : 'لم تكتمل — أعطها حقّها'}
+                </span>
+              </div>
+            )}
+
             <div className="space-y-3">
               {ayahRanges.map((r, idx) => {
                 if (wordVerdicts) {

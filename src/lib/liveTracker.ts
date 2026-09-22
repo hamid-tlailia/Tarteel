@@ -1,13 +1,31 @@
 import type { WordWithRules } from './tajweed'
 import { expectedDurationBreakdown } from './wordTiming'
 import type { PaceId } from './recitationPace'
+import { heldRuleOf } from './acousticTajweed'
+import type { TajweedRuleId } from '../types/quran'
 
 export type LiveWordStatus = 'pending' | 'current' | 'excellent' | 'ok' | 'short' | 'long' | 'silent'
 
 export interface LiveWordResult {
   status: LiveWordStatus
   measuredMs: number
+  /**
+   * The held rule this word owed and did not deliver, named the instant the word ends.
+   *
+   * Waiting for the final analysis to say a ghunnah was dropped teaches nothing while the
+   * reciter is still reading, and someone testing the app by deliberately skipping a rule
+   * gets no sign that it noticed until they stop. This is the timing evidence only — the
+   * word was too short to have contained the hold — so it cannot see a madd that was held
+   * for long enough but read wrong. The spectral check after recording still does that.
+   */
+  missed?: { rule: TajweedRuleId; kind: 'madd' | 'ghunnah'; severity: 'mild' | 'severe' }
 }
+
+/** Share of the obligation that must be performed live before the rule counts as delivered.
+ * Looser than the post-hoc check in acousticTajweed.ts: this runs on microphone energy alone,
+ * with word boundaries guessed from silence, so it should speak only when plainly right. */
+const LIVE_HOLD_ENOUGH = 0.5
+const LIVE_HOLD_ABSENT = 0.15
 
 export interface LiveSnapshot {
   /** Index of the word currently being read, or the next unreached one. */
@@ -85,8 +103,9 @@ export class LiveTajweedTracker {
   private words: WordWithRules[]
   private expectedMs: number[]
   private optionalMs: number[]
+  private breakdowns: ReturnType<typeof expectedDurationBreakdown>[] = []
   private tau: number
-  private onWord: ((index: number, status: LiveWordStatus, measuredMs: number) => void) | null
+  private onWord: ((index: number, result: LiveWordResult) => void) | null
 
   private cursor = -1
   private inWord = false
@@ -119,13 +138,14 @@ export class LiveTajweedTracker {
   constructor(
     words: WordWithRules[],
     tau = 0.45,
-    onWord: ((index: number, status: LiveWordStatus, measuredMs: number) => void) | null = null,
+    onWord: ((index: number, result: LiveWordResult) => void) | null = null,
     /** The pace the reciter chose — it decides both how long a ḥaraka lasts and how many of
      * them each madd is owed, so the live meter fills toward the right target. */
     paceId?: PaceId,
   ) {
     this.words = words
     const breakdowns = words.map((w) => expectedDurationBreakdown(w, paceId))
+    this.breakdowns = breakdowns
     this.expectedMs = breakdowns.map((b) => b.total)
     this.optionalMs = breakdowns.map((b) => b.optionalExtraMs)
     this.tau = tau
@@ -184,19 +204,55 @@ export class LiveTajweedTracker {
       return
     }
     const measured = Math.round(this.voicedMs)
+
+    // The pace this word is judged against must come from the *other* words. Folding this
+    // word's own ratio in first drags the yardstick toward the very thing being measured: a
+    // madd dropped outright then read as merely shortened, because the scale had already
+    // moved half way to the rushed reading. Worse, a reciter skipping every obligation alike
+    // would pull the scale down until nothing registered at all — the same blindness to a
+    // uniform failure that the post-hoc check avoids by leaving the word out.
+    const scaleBefore = this.scale
     if (measured >= MIN_VOICED_MS && this.expectedMs[i] > 0) {
       this.ratios.push(measured / this.expectedMs[i])
       if (this.ratios.length >= 2) this.scale = Math.min(1.8, Math.max(0.6, median(this.ratios)))
     }
     const expected = Math.max(60, Math.round(this.expectedMs[i] * this.scale))
     const status = classifyDuration(measured, expected, this.tau)
-    this.results[i] = { status, measuredMs: measured }
+    this.results[i] = { status, measuredMs: measured, missed: this.missedHold(i, measured, scaleBefore) ?? undefined }
 
     this.inWord = false
     this.voicedMs = 0
     this.silenceMs = 0
     this.rev++
-    this.onWord?.(i, status, measured)
+    this.onWord?.(i, this.results[i])
+  }
+
+  /**
+   * Whether the word just closed had room for the hold its rules call for.
+   *
+   * Measured against the obligation itself — the extra time the rule adds — not against the
+   * word's whole duration, for the same reason the post-hoc check is: on a long word,
+   * dropping the madd shortens it by only a fraction, which any percentage of the total
+   * would miss.
+   */
+  private missedHold(i: number, measuredMs: number, scale: number): LiveWordResult['missed'] | null {
+    const word = this.words[i]
+    const held = word ? heldRuleOf(word.rules) : null
+    if (!held) return null
+    const breakdown = this.breakdowns[i]
+    if (!breakdown) return null
+
+    const unheld = (held.kind === 'madd' ? breakdown.withoutMadd : breakdown.withoutGhunnah) * scale
+    const obligation = breakdown.total * scale - unheld
+    if (obligation <= 0) return null
+
+    const performed = (measuredMs - unheld) / obligation
+    if (performed >= LIVE_HOLD_ENOUGH) return null
+    return {
+      rule: held.rule,
+      kind: held.kind,
+      severity: performed <= LIVE_HOLD_ABSENT ? 'severe' : 'mild',
+    }
   }
 
   /** Call when recording stops: closes any still-open word and freezes the tracker. */

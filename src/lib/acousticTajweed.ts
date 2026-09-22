@@ -80,8 +80,9 @@ export interface AcousticAlert {
 }
 
 /** The rule this word is judged on: a madd if it carries one, otherwise a ghunnah. A word
- * with both is judged on its madd, which is the longer and more audible obligation. */
-function heldRuleOf(rules: TajweedRuleId[]): { rule: TajweedRuleId; kind: 'madd' | 'ghunnah' } | null {
+ * with both is judged on its madd, which is the longer and more audible obligation.
+ * Exported so the live tracker can name the same rule while the reciter is still reading. */
+export function heldRuleOf(rules: TajweedRuleId[]): { rule: TajweedRuleId; kind: 'madd' | 'ghunnah' } | null {
   const madd = rules.find((r) => MADD_RULES.has(r))
   if (madd) return { rule: madd, kind: 'madd' }
   const ghunnah = rules.find((r) => GHUNNA_RULES.has(r))
