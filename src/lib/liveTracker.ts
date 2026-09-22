@@ -3,6 +3,8 @@ import { expectedDurationBreakdown } from './wordTiming'
 import type { PaceId } from './recitationPace'
 import { heldRuleOf } from './acousticTajweed'
 import type { TajweedRuleId } from '../types/quran'
+import { HoldTracker } from './holdDetector'
+import { heldRulesOf, matchHoldsToRules, unmetRules, type RuleMeter } from './ruleMeter'
 
 export type LiveWordStatus = 'pending' | 'current' | 'excellent' | 'ok' | 'short' | 'long' | 'silent'
 
@@ -19,6 +21,11 @@ export interface LiveWordResult {
    * for long enough but read wrong. The spectral check after recording still does that.
    */
   missed?: { rule: TajweedRuleId; kind: 'madd' | 'ghunnah'; severity: 'mild' | 'severe' }
+  /**
+   * One entry per held ruling in the word, in the order its letters run — what the coloured
+   * bars under the word are drawn from. Empty for a word carrying no madd or ghunnah.
+   */
+  meters?: RuleMeter[]
 }
 
 /** Share of the obligation that must be performed live before the rule counts as delivered.
@@ -42,6 +49,8 @@ export interface LiveSnapshot {
    * permits more than its minimum. The meter shows this beyond the finish line, since
    * holding it is the reciter's choice and stopping at the minimum is not a fault. */
   currentOptionalMs: number
+  /** One per held ruling of the word being recited, for the coloured bars beneath it. */
+  currentRuleMeters: RuleMeter[]
 }
 
 /** Longest pause between two voiced stretches still counted as one word (ms). */
@@ -104,6 +113,16 @@ export class LiveTajweedTracker {
   private expectedMs: number[]
   private optionalMs: number[]
   private breakdowns: ReturnType<typeof expectedDurationBreakdown>[] = []
+  /** The held rulings of each word, precomputed since they depend only on text and pace. */
+  private ruleSpecs: ReturnType<typeof heldRulesOf>[] = []
+  /** Listens for the moments a sound is actually being held — see holdDetector.ts. */
+  private holds = new HoldTracker()
+  /**
+   * Whether any caller has supplied raw audio, without which the hold detector hears
+   * nothing and every ruling would look unperformed. A caller feeding energy alone still
+   * gets word segmentation and the whole-word duration check; it simply gets no bars.
+   */
+  private sawSamples = false
   private tau: number
   private onWord: ((index: number, result: LiveWordResult) => void) | null
 
@@ -146,6 +165,7 @@ export class LiveTajweedTracker {
     this.words = words
     const breakdowns = words.map((w) => expectedDurationBreakdown(w, paceId))
     this.breakdowns = breakdowns
+    this.ruleSpecs = words.map((w) => heldRulesOf(w, paceId))
     this.expectedMs = breakdowns.map((b) => b.total)
     this.optionalMs = breakdowns.map((b) => b.optionalExtraMs)
     this.tau = tau
@@ -153,8 +173,14 @@ export class LiveTajweedTracker {
     this.results = words.map(() => ({ status: 'pending' as LiveWordStatus, measuredMs: 0 }))
   }
 
-  /** Feed one energy frame (rms 0..~1) with its timestamp in ms. */
-  feed(rms: number, tMs: number): void {
+  /**
+   * Feed one energy frame (rms 0..~1) with its timestamp in ms.
+   *
+   * `samples` are that frame's raw audio, which the hold detector needs: energy alone says a
+   * sound is happening, and only its spectrum says the sound is being *held*. Optional, so a
+   * caller with no audio path still gets word segmentation and duration checks.
+   */
+  feed(rms: number, tMs: number, samples?: Float32Array, sampleRate = 48000): void {
     if (this.finished || !this.words.length) return
     const dt = this.lastT ? Math.max(0, Math.min(MAX_FRAME_DT_MS, tMs - this.lastT)) : 16
     this.lastT = tMs
@@ -176,9 +202,14 @@ export class LiveTajweedTracker {
         this.silenceMs = 0
         this.results[this.cursor] = { status: 'current', measuredMs: 0 }
         this.requiredMet = false
+        this.holds.reset()
         this.rev++
       }
       this.voicedMs += dt
+      if (samples) {
+        this.sawSamples = true
+        this.holds.feed(samples, sampleRate, dt)
+      }
       this.silenceMs = 0
 
       if (!this.requiredMet) {
@@ -211,6 +242,8 @@ export class LiveTajweedTracker {
     // moved half way to the rushed reading. Worse, a reciter skipping every obligation alike
     // would pull the scale down until nothing registered at all — the same blindness to a
     // uniform failure that the post-hoc check avoids by leaving the word out.
+    // Read the holds before the tracker is reset for the next word.
+    const meters = this.metersFor(i, true)
     const scaleBefore = this.scale
     if (measured >= MIN_VOICED_MS && this.expectedMs[i] > 0) {
       this.ratios.push(measured / this.expectedMs[i])
@@ -218,7 +251,25 @@ export class LiveTajweedTracker {
     }
     const expected = Math.max(60, Math.round(this.expectedMs[i] * this.scale))
     const status = classifyDuration(measured, expected, this.tau)
-    this.results[i] = { status, measuredMs: measured, missed: this.missedHold(i, measured, scaleBefore) ?? undefined }
+    // Where the rulings were measured one by one, that is the whole account — the
+    // whole-word duration check is not consulted at all, and must not be.
+    //
+    // It asks whether the word lasted as long as its syllables and rules together imply,
+    // which is a proxy, and a loose one: «عَمَّ» with its ghunnah held for a full two
+    // ḥarakāt but its two vowels clipped comes in under the word's expected total and the
+    // proxy calls the ghunnah short, though the bars show it was given in full. Direct
+    // evidence about the ruling beats an inference from the word around it.
+    const unmet = meters.length > 0 ? unmetRules(meters)[0] : undefined
+    this.results[i] = {
+      status,
+      measuredMs: measured,
+      meters,
+      missed: unmet
+        ? { rule: unmet.rule, kind: unmet.kind, severity: unmet.heldMs <= 0 ? 'severe' : 'mild' }
+        : meters.length > 0
+          ? undefined
+          : (this.missedHold(i, measured, scaleBefore) ?? undefined),
+    }
 
     this.inWord = false
     this.voicedMs = 0
@@ -255,12 +306,41 @@ export class LiveTajweedTracker {
     }
   }
 
+  /**
+   * The state of each of this word's rulings, from the holds heard in it so far.
+   *
+   * `finished` decides what an unmatched ruling means: mid-word it has not been reached yet,
+   * and after the word it was passed over.
+   */
+  private metersFor(index: number, finished: boolean): RuleMeter[] {
+    const specs = this.ruleSpecs[index]
+    if (!specs || specs.length === 0 || !this.sawSamples) return []
+    const { holds, openStartMs, elapsedMs } = this.holds.current()
+    const open =
+      !finished && openStartMs !== null
+        ? { startMs: openStartMs, elapsedMs, nasal: null }
+        : null
+    return matchHoldsToRules(specs, holds, open, finished)
+  }
+
   /** Call when recording stops: closes any still-open word and freezes the tracker. */
   finish(): void {
     if (this.finished) return
     if (this.inWord) this.closeCurrent()
     this.finished = true
     this.rev++
+  }
+
+  /**
+   * The bars for the word being recited right now, read fresh each animation frame.
+   *
+   * Separate from snapshot() because it is polled at display rate and must not allocate the
+   * whole passage's state to move one bar — the same reason the hold meter is written
+   * straight to the DOM rather than through React.
+   */
+  currentRuleMeters(): RuleMeter[] {
+    if (!this.inWord || this.cursor < 0) return []
+    return this.metersFor(this.cursor, false)
   }
 
   /** Changes only at the discrete moments listed on `rev`. Cheap enough to poll per frame. */
@@ -295,6 +375,7 @@ export class LiveTajweedTracker {
       started: this.started,
       finished: this.finished,
       words: this.results.map((r) => ({ ...r })),
+      currentRuleMeters: this.inWord && this.cursor >= 0 ? this.metersFor(this.cursor, false) : [],
       currentVoicedMs: this.inWord ? Math.round(this.voicedMs) : 0,
       currentExpectedMs: expectedNow,
       currentOptionalMs: optionalNow,

@@ -4,6 +4,7 @@ import { fetchSurahAyahs, fetchSurahList, setReciter } from '../api/quran'
 import type { Ayah, SurahMeta, TajweedRuleId } from '../types/quran'
 import { TajweedText } from '../components/TajweedText'
 import { PracticeIcon } from '../components/NavIcons'
+import { RuleBars, ruleBarsHeightClass } from '../components/RuleBars'
 import { Dropdown } from '../components/Dropdown'
 import { StopIcon } from '../components/RecorderIcons'
 import { primaryRule, segmentsToWords, TAJWEED_RULE_MAP, type WordWithRules } from '../lib/tajweed'
@@ -34,6 +35,7 @@ import {
   type WordVerdict,
 } from '../lib/verdicts'
 import { LiveTajweedTracker, type LiveSnapshot, type LiveWordResult } from '../lib/liveTracker'
+import type { RuleMeter } from '../lib/ruleMeter'
 import { expectedDurationBreakdown } from '../lib/wordTiming'
 import { useWhisper } from '../asr/useWhisper'
 import { conditionForAsr, decodeToPcm16k, MicRecorder, TARGET_SAMPLE_RATE, trimSilence } from '../asr/audio'
@@ -197,21 +199,20 @@ function ComparedWords({
 function LiveWords({
   words,
   liveWords,
-  holdProgress,
-  fillRef,
+  liveMeters,
+  fillRefs,
 }: {
   words: WordWithRules[]
   liveWords: LiveWordResult[]
-  /** What the word being recited right now has been held for, what its rules require, and
-   * what they merely permit beyond that. Null between words. Used for the *layout* of the
-   * meter — where the finish line sits, how much optional track to draw — all of which only
+  /** The rulings of the word being recited right now — one bar each, in their letters'
+   * order. Their layout (where the finish line sits, how much optional track to draw) only
    * changes when the word does. */
-  holdProgress: { voicedMs: number; requiredMs: number; optionalMs: number } | null
-  /** The filled part of the meter, handed back to the caller so its animation-frame loop can
-   * set the width directly. Going through React state moved it at best every 80ms and, worse,
+  liveMeters: RuleMeter[]
+  /** The filled part of each bar, handed back so the animation-frame loop can set the width
+   * directly. Going through React state moved them at best every 80ms and, worse,
    * re-rendered this whole list to do it — which starved the frames feeding the tracker and
-   * left the bar visibly trailing the voice. */
-  fillRef?: (el: HTMLSpanElement | null) => void
+   * left the bars visibly trailing the voice. */
+  fillRefs?: (index: number, el: HTMLSpanElement | null) => void
 }) {
   return (
     <div className="flex flex-wrap gap-x-1.5 gap-y-2 font-quran text-2xl" dir="rtl">
@@ -228,58 +229,37 @@ function LiveWords({
           )
         }
         if (live.status === 'current') {
-          // The bar fills toward what the word's rules actually *require*, and completes
-          // there. Anything a rule merely permits beyond that — the ʿāriḍ may be held for
-          // two, four or six — sits past the finish line as a lighter track the reciter may
-          // take or leave. Filling toward the sum of every madd in the word would demand
-          // the longest reading of each as though it were owed, which it is not.
-          const required = holdProgress?.requiredMs ?? 0
-          const optional = holdProgress?.optionalMs ?? 0
-          const voiced = holdProgress?.voicedMs ?? 0
-          const span = required + optional
-          const complete = required > 0 && voiced >= required
-          const requiredWidth = span > 0 ? (required / span) * 100 : 100
-          const filledWidth = span > 0 ? Math.min(100, (voiced / span) * 100) : 0
-
+          // One bar per ruling, in the ruling's own colour, filling only from the hold that
+          // belongs to it — see RuleBars and ruleMeter.ts. A ruling not yet reached stays
+          // faint rather than empty: the reciter is still on the letters before it.
+          const allComplete = liveMeters.length > 0 && liveMeters.every((m) => m.state === 'complete')
           return (
-            <span key={i} className="relative inline-block px-1.5 pb-2 pt-0.5">
+            <span
+              key={i}
+              className={clsx('relative inline-block px-1.5 pt-0.5', ruleBarsHeightClass(liveMeters.length))}
+            >
               <span
                 className={clsx(
                   'rounded-lg px-1 ring-1 transition-colors',
-                  complete ? 'bg-ok/15 text-ok ring-ok/50' : 'bg-accent-soft text-accent ring-gold/60',
+                  allComplete ? 'bg-ok/15 text-ok ring-ok/50' : 'bg-accent-soft text-accent ring-gold/60',
                 )}
               >
                 {w.word}
               </span>
-              <span aria-hidden className="absolute inset-x-1 bottom-0 h-1.5 overflow-hidden rounded-full bg-line-soft">
-                {/* The permitted-but-optional stretch, shown dimmer so it never reads as owed. */}
-                {optional > 0 && (
-                  <span
-                    className="absolute inset-y-0 right-0 bg-gold/20"
-                    style={{ width: `${100 - requiredWidth}%` }}
-                  />
-                )}
-                <span
-                  ref={fillRef}
-                  className={clsx('absolute inset-y-0 right-0 rounded-full', complete ? 'bg-ok' : 'bg-gold')}
-                  style={{ width: `${filledWidth}%` }}
-                />
-                {/* The finish line: where the obligation ends and choice begins. */}
-                {optional > 0 && (
-                  <span className="absolute inset-y-0 w-px bg-ok/70" style={{ right: `${requiredWidth}%` }} />
-                )}
-              </span>
+              <RuleBars meters={liveMeters} fillRefs={fillRefs} />
             </span>
           )
         }
+
         // A word that owed a hold and did not deliver it is named, not merely coloured —
         // "أقصر من المتوقع" tells a reciter nothing they can act on, while "لم تكتمل الغُنّة"
         // does. Timing evidence only: it fires when the word had no room for the hold.
         if (live.missed) {
           const ruleName = TAJWEED_RULE_MAP[live.missed.rule]?.nameAr ?? (live.missed.kind === 'ghunnah' ? 'الغُنّة' : 'المدّ')
           const severe = live.missed.severity === 'severe'
+          const meters = live.meters ?? []
           return (
-            <span key={i} className="relative inline-block px-1.5 pb-4 pt-0.5">
+            <span key={i} className="relative inline-block px-1.5 pb-6 pt-0.5">
               <span
                 className={clsx(
                   'rounded-lg px-1 ring-1',
@@ -296,6 +276,13 @@ function LiveWords({
               >
                 {severe ? `${ruleName} لم يظهر` : `${ruleName} لم يكتمل`}
               </span>
+              {/* Frozen at what was actually given, so the reciter sees *which* of the word's
+                  rulings fell short rather than only that one did. */}
+              {meters.length > 0 && (
+                <span className="absolute inset-x-1 bottom-3 block">
+                  <RuleBars meters={meters} />
+                </span>
+              )}
             </span>
           )
         }
@@ -493,8 +480,8 @@ export function PracticePage() {
     }
   }, [paceId])
 
-  /** The filled part of the live hold meter, written to directly each animation frame. */
-  const holdFillRef = useRef<HTMLSpanElement | null>(null)
+  /** The filled part of each ruling's bar, written to directly each animation frame. */
+  const holdFillRefs = useRef<(HTMLSpanElement | null)[]>([])
   /** The tracker revision the last React render reflected, so renders happen on events. */
   const liveRevisionRef = useRef(-1)
   /** The mic ring, likewise driven per frame rather than through a re-render. */
@@ -849,11 +836,16 @@ export function PracticePage() {
             latestRmsRef.current = rms
             tr.feed(rms, performance.now())
 
-            const hold = tr.currentHold()
-            const fill = holdFillRef.current
-            if (fill && hold) {
-              const span = hold.requiredMs + hold.optionalMs
-              fill.style.width = span > 0 ? `${Math.min(100, (hold.voicedMs / span) * 100)}%` : '0%'
+            // One bar per ruling of the word being recited, each filling from the hold that
+            // belongs to it — so the muttaṣil's bar stops where the muttaṣil stopped, and
+            // the ʿāriḍ's starts from nothing rather than inheriting its progress.
+            const meters = tr.currentRuleMeters()
+            for (let m = 0; m < meters.length; m++) {
+              const fill = holdFillRefs.current[m]
+              if (!fill) continue
+              const meter = meters[m]
+              const span = meter.requiredMs + meter.optionalMs
+              fill.style.width = span > 0 ? `${Math.min(100, (meter.heldMs / span) * 100)}%` : '0%'
             }
 
             const ring = micRingRef.current
@@ -1143,14 +1135,6 @@ export function PracticePage() {
                 // whole ayah behind the "not reached yet" placeholder until that word
                 // finished — so the live view only ever appeared partway in.
                 const reached = !!liveSnapshot?.started && liveSnapshot.cursor >= r.start
-                const holdProgress =
-                  liveSnapshot && liveSnapshot.currentExpectedMs > 0
-                    ? {
-                        voicedMs: liveSnapshot.currentVoicedMs,
-                        requiredMs: liveSnapshot.currentExpectedMs,
-                        optionalMs: liveSnapshot.currentOptionalMs,
-                      }
-                    : null
                 return (
                   <div key={r.ayahNumber} className="flex items-start gap-2">
                     <div className="flex-1">
@@ -1158,9 +1142,9 @@ export function PracticePage() {
                         <LiveWords
                           words={referenceWords.slice(r.start, r.end)}
                           liveWords={(liveSnapshot?.words ?? []).slice(r.start, r.end)}
-                          holdProgress={holdProgress}
-                          fillRef={(el) => {
-                            holdFillRef.current = el
+                          liveMeters={liveSnapshot?.currentRuleMeters ?? []}
+                          fillRefs={(index, el) => {
+                            holdFillRefs.current[index] = el
                           }}
                         />
                       ) : (
