@@ -1,5 +1,6 @@
 import type { WordWithRules } from './tajweed'
 import { expectedDurationBreakdown } from './wordTiming'
+import type { PaceId } from './recitationPace'
 
 export type LiveWordStatus = 'pending' | 'current' | 'excellent' | 'ok' | 'short' | 'long' | 'silent'
 
@@ -119,9 +120,12 @@ export class LiveTajweedTracker {
     words: WordWithRules[],
     tau = 0.45,
     onWord: ((index: number, status: LiveWordStatus, measuredMs: number) => void) | null = null,
+    /** The pace the reciter chose — it decides both how long a ḥaraka lasts and how many of
+     * them each madd is owed, so the live meter fills toward the right target. */
+    paceId?: PaceId,
   ) {
     this.words = words
-    const breakdowns = words.map(expectedDurationBreakdown)
+    const breakdowns = words.map((w) => expectedDurationBreakdown(w, paceId))
     this.expectedMs = breakdowns.map((b) => b.total)
     this.optionalMs = breakdowns.map((b) => b.optionalExtraMs)
     this.tau = tau

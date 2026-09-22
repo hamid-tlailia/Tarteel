@@ -2,7 +2,8 @@ import type { WordWithRules } from './tajweed'
 import type { TajweedRuleId } from '../types/quran'
 import type { AlignedWord } from './alignment'
 import type { TimedChunk } from '../asr/whisper.worker'
-import { expectedDurationBreakdown, fastestPlausibleDuration } from './wordTiming'
+import { expectedDurationBreakdown, fastestPlausibleDuration, measuredHarakaMs } from './wordTiming'
+import { detectPace, paceOf, type PaceId, type PaceProfile } from './recitationPace'
 
 /**
  * Heuristic acoustic check for madd (elongation) rules — the step beyond plain text
@@ -97,8 +98,9 @@ function judgeHold(
   kind: 'madd' | 'ghunnah',
   measuredMs: number,
   tempoScale: number,
+  paceId: PaceId | undefined,
 ): { severity: 'mild' | 'severe'; minimumMs: number } | null {
-  const expected = expectedDurationBreakdown(refWord)
+  const expected = expectedDurationBreakdown(refWord, paceId)
   const unheld = (kind === 'madd' ? expected.withoutMadd : expected.withoutGhunnah) * tempoScale
   const obligation = expected.total * tempoScale - unheld
   if (obligation <= 0) return null
@@ -114,7 +116,7 @@ function judgeHold(
   // syllables and the shortest holds anyone performs, so discounting them again (as a first
   // version did, by reusing the 40% allowance below) would let a word through that could
   // not physically have contained its hold. Only measurement error is allowed for.
-  const fastest = fastestPlausibleDuration(refWord, kind)
+  const fastest = fastestPlausibleDuration(refWord, kind, paceId)
   const floorMs = fastest.baseMs + fastest.holdMs
   const impossible = fastest.holdMs > 0 && measuredMs < floorMs - TIMING_TOLERANCE_MS
 
@@ -165,6 +167,7 @@ export function detectMaddDurationAlertsForced(
   referenceWords: WordWithRules[],
   wordTimings: ([number, number] | null)[],
   correctRefIndices: Set<number>,
+  paceId?: PaceId,
 ): AcousticAlert[] {
   // Each word is judged against *its own* expected duration (syllable count + the rules it
   // carries), not against a flat median of every word in the passage.
@@ -182,7 +185,7 @@ export function detectMaddDurationAlertsForced(
     if (!timing) return
     const measuredMs = (timing[1] - timing[0]) * 1000
     if (measuredMs <= 0) return
-    const expected = expectedDurationBreakdown(refWord)
+    const expected = expectedDurationBreakdown(refWord, paceId)
     if (expected.total > 0) {
       ratioIndex.set(i, ratios.length)
       ratios.push(measuredMs / expected.total)
@@ -204,7 +207,7 @@ export function detectMaddDurationAlertsForced(
     const tempoScale = slot === undefined ? null : paceExcluding(ratios, slot)
     if (tempoScale === null) return
 
-    const judged = judgeHold(refWord, held.kind, measuredMs, tempoScale)
+    const judged = judgeHold(refWord, held.kind, measuredMs, tempoScale, paceId)
     if (!judged) return
 
     alerts.push({
@@ -231,6 +234,7 @@ export function detectMaddDurationAlertsFromFreeDecode(
   referenceWords: WordWithRules[],
   chunks: TimedChunk[],
   correctRefIndices: Set<number>,
+  paceId?: PaceId,
 ): AcousticAlert[] {
   if (chunks.length < 3) return []
 
@@ -255,7 +259,7 @@ export function detectMaddDurationAlertsFromFreeDecode(
     if (!refWord) continue
     const measuredMs = measuredMsOf(w)
     if (measuredMs === null) continue
-    const expected = expectedDurationBreakdown(refWord)
+    const expected = expectedDurationBreakdown(refWord, paceId)
     if (expected.total > 0) {
       ratioIndex.set(w.refIndex, ratios.length)
       ratios.push(measuredMs / expected.total)
@@ -277,7 +281,7 @@ export function detectMaddDurationAlertsFromFreeDecode(
     const tempoScale = slot === undefined ? null : paceExcluding(ratios, slot)
     if (tempoScale === null) continue
 
-    const judged = judgeHold(refWord, held.kind, measuredMs, tempoScale)
+    const judged = judgeHold(refWord, held.kind, measuredMs, tempoScale, paceId)
     if (!judged) continue
 
     alerts.push({
@@ -291,4 +295,36 @@ export function detectMaddDurationAlertsFromFreeDecode(
     })
   }
   return alerts
+}
+
+/**
+ * Which pace the reciter was *actually* reading in, whatever they selected.
+ *
+ * The selected pace decides what is owed; this reports what was delivered, so the app can
+ * say "you read this in tadwīr" rather than silently grading a ḥadr recitation against
+ * taḥqīq's madds. Words carrying a held rule are left out of the estimate: their duration is
+ * dominated by the hold under examination, and letting the thing being judged set the
+ * yardstick is the mistake that made a fully-recited madd look short.
+ */
+export function detectRecitedPace(
+  referenceWords: WordWithRules[],
+  wordTimings: ([number, number] | null)[],
+  correctRefIndices: Set<number>,
+  selectedPaceId?: PaceId,
+): { pace: PaceProfile; harakaMs: number; matchesSelected: boolean } | null {
+  const estimates: number[] = []
+  referenceWords.forEach((refWord, i) => {
+    if (!correctRefIndices.has(i)) return
+    if (heldRuleOf(refWord.rules)) return
+    const timing = wordTimings[i]
+    if (!timing) return
+    const ms = (timing[1] - timing[0]) * 1000
+    const haraka = measuredHarakaMs(refWord, ms, selectedPaceId)
+    if (haraka !== null && haraka > 0) estimates.push(haraka)
+  })
+  if (estimates.length === 0) return null
+
+  const harakaMs = median(estimates)
+  const pace = detectPace(harakaMs)
+  return { pace, harakaMs, matchesSelected: pace.id === paceOf(selectedPaceId).id }
 }

@@ -1,5 +1,6 @@
 import type { TajweedRuleId } from '../types/quran'
 import type { WordRuleSpan, WordWithRules } from './tajweed'
+import { maddHarakatAt, maddOptionalExtraAt, paceOf, type PaceId, type PaceProfile } from './recitationPace'
 
 /**
  * Theory-grounded (rule + syllable count) *absolute* expected word duration, used by the
@@ -10,45 +11,15 @@ import type { WordRuleSpan, WordWithRules } from './tajweed'
  * this is derived purely from the word's own syllable count and tajweed rules, so it works
  * from the very first word.
  *
- * The harakah-based constants mirror the widely used pedagogical convention for a measured
- * "tarteel" pace (natural madd = 2 harakāt, wājib muttaṣil/jā'iz munfaṣil ≈ 4, lāzim = 6) —
- * the same scale already used for the relative multipliers in acousticTajweed.ts.
+ * How long a ḥaraka lasts, and how many ḥarakāt each madd is owed, both belong to the pace
+ * the reciter chose — see recitationPace.ts. A single fixed tempo had to treat every reciter
+ * faster or slower than it as mistaken, and had to pick one reading of the ʿāriḍ (two, four
+ * or six are all sound) and call the other two faults. Callers that name no pace get tadwīr,
+ * the middle one, which is what this file assumed before paces existed.
  */
-const HARAKA_MS = 260
 const WORD_FIXED_MS = 70
 const MIN_WORD_MS = 240
 const QALQALAH_BOUNCE_MS = 90
-
-/**
- * The *shortest* length each madd permits, in ḥarakāt — not a typical or middle length.
- *
- * A reciter who takes the shortest permitted option has done nothing wrong, so measuring
- * against anything longer manufactures faults. That matters most for the ʿāriḍ, where two,
- * four and six are all sound: requiring four flagged a perfectly valid qaṣr as "short" on
- * nearly every ayah-final word, since almost every ayah ends in one. Where Ḥafṣ permits
- * four or five (muttaṣil, munfaṣil), four is the floor.
- */
-const MADD_HARAKAT: Partial<Record<TajweedRuleId, number>> = {
-  madda_normal: 2,
-  madda_permissible: 4,
-  madda_obligatory: 4,
-  madda_necessary: 6,
-  // Derived from the script rather than marked by the edition — see uthmaniRules.ts.
-  madda_badal: 2,
-  madda_sila_sughra: 2,
-  madda_sila_kubra: 4,
-  madda_leen: 2,
-  // Permits 2, 4 or 6 — and joining onward rather than stopping amounts to the natural 2.
-  madda_arid: 2,
-  madda_iwad: 2,
-}
-
-/** Madds whose length the reciter may freely extend beyond the minimum above, and by how
- * many further ḥarakāt at most. Time spent here is a choice, never an obligation. */
-const MADD_OPTIONAL_EXTRA_HARAKAT: Partial<Record<TajweedRuleId, number>> = {
-  madda_arid: 4, // 2 required, up to 6 permitted
-  madda_leen: 4, // follows the ʿāriḍ it accompanies
-}
 
 /** Rules performed as a held nasal sound. Shared with the checks that measure it. */
 export const GHUNNA_RULES = new Set<TajweedRuleId>([
@@ -143,10 +114,15 @@ export interface FastestPlausible {
 }
 
 /** The fastest this word could physically be recited with its hold actually performed. */
-export function fastestPlausibleDuration(w: WordWithRules, kind: 'madd' | 'ghunnah'): FastestPlausible {
+export function fastestPlausibleDuration(
+  w: WordWithRules,
+  kind: 'madd' | 'ghunnah',
+  paceId?: PaceId,
+): FastestPlausible {
+  const pace = paceOf(paceId)
   const harakat = heldHarakat(
     w,
-    (rule) => (kind === 'madd' ? (MADD_HARAKAT[rule] ?? 0) : GHUNNA_RULES.has(rule) ? GHUNNA_HARAKAT : 0),
+    (rule) => (kind === 'madd' ? maddHarakatAt(pace, rule) : GHUNNA_RULES.has(rule) ? GHUNNA_HARAKAT : 0),
     'shortest',
   )
   return {
@@ -172,13 +148,15 @@ export interface ExpectedDuration {
   withoutGhunnah: number
 }
 
-export function expectedDurationBreakdown(w: WordWithRules): ExpectedDuration {
-  const base = WORD_FIXED_MS + HARAKA_MS * countSyllables(w.word)
-  const maddMs = heldHarakat(w, (rule) => MADD_HARAKAT[rule] ?? 0, 'shortest') * HARAKA_MS
-  const ghunnaMs = heldHarakat(w, (rule) => (GHUNNA_RULES.has(rule) ? GHUNNA_HARAKAT : 0), 'shortest') * HARAKA_MS
+export function expectedDurationBreakdown(w: WordWithRules, paceId?: PaceId): ExpectedDuration {
+  const pace = paceOf(paceId)
+  const harakaMs = pace.harakaMs
+  const base = WORD_FIXED_MS + harakaMs * countSyllables(w.word)
+  const maddMs = heldHarakat(w, (rule) => maddHarakatAt(pace, rule), 'shortest') * harakaMs
+  const ghunnaMs = heldHarakat(w, (rule) => (GHUNNA_RULES.has(rule) ? GHUNNA_HARAKAT : 0), 'shortest') * harakaMs
   // The optional stretch belongs to the same letter as the madd it extends, so it is chosen
   // the same way: the most any one of the word's madds permits beyond its minimum.
-  const optionalMs = heldHarakat(w, (rule) => MADD_OPTIONAL_EXTRA_HARAKAT[rule] ?? 0, 'longest') * HARAKA_MS
+  const optionalMs = heldHarakat(w, (rule) => maddOptionalExtraAt(pace, rule), 'longest') * harakaMs
   let otherMs = 0
   for (const rule of w.rules) {
     if (rule === 'qalqalah') otherMs += QALQALAH_BOUNCE_MS
@@ -192,6 +170,21 @@ export function expectedDurationBreakdown(w: WordWithRules): ExpectedDuration {
   }
 }
 
-export function expectedWordDurationMs(w: WordWithRules): number {
-  return expectedDurationBreakdown(w).total
+export function expectedWordDurationMs(w: WordWithRules, paceId?: PaceId): number {
+  return expectedDurationBreakdown(w, paceId).total
 }
+
+/**
+ * How long a ḥaraka lasted in the recitation just measured, from how a word's duration
+ * compares with what its own syllables and rules called for. Feeds the pace actually read in
+ * back to the reciter (see detectPace) instead of only judging them against the one they
+ * picked.
+ */
+export function measuredHarakaMs(w: WordWithRules, measuredMs: number, paceId?: PaceId): number | null {
+  const pace = paceOf(paceId)
+  const expected = expectedDurationBreakdown(w, paceId)
+  if (expected.total <= 0 || measuredMs <= 0) return null
+  return (measuredMs / expected.total) * pace.harakaMs
+}
+
+export type { PaceProfile }
