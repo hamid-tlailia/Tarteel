@@ -37,7 +37,7 @@ const MIN_SPEECH_SAMPLES = 8000 // ~0.5s at 16kHz, after silence trimming
 // Tolerance band for the live timing tracker (0=very lenient, 1=strict) — see tauTolerance
 // in liveTracker.ts. Not user-configurable yet; a reasonable middle ground for a first pass.
 const LIVE_TAU = 0.45
-const LIVE_SNAPSHOT_INTERVAL_MS = 80
+const LIVE_CLOCK_INTERVAL_MS = 500
 
 function hypWordsFromResult(text: string, chunks: TimedChunk[]) {
   if (chunks.length > 0) {
@@ -191,12 +191,20 @@ function LiveWords({
   words,
   liveWords,
   holdProgress,
+  fillRef,
 }: {
   words: WordWithRules[]
   liveWords: LiveWordResult[]
   /** What the word being recited right now has been held for, what its rules require, and
-   * what they merely permit beyond that. Null between words. */
+   * what they merely permit beyond that. Null between words. Used for the *layout* of the
+   * meter — where the finish line sits, how much optional track to draw — all of which only
+   * changes when the word does. */
   holdProgress: { voicedMs: number; requiredMs: number; optionalMs: number } | null
+  /** The filled part of the meter, handed back to the caller so its animation-frame loop can
+   * set the width directly. Going through React state moved it at best every 80ms and, worse,
+   * re-rendered this whole list to do it — which starved the frames feeding the tracker and
+   * left the bar visibly trailing the voice. */
+  fillRef?: (el: HTMLSpanElement | null) => void
 }) {
   return (
     <div className="flex flex-wrap gap-x-1.5 gap-y-2 font-quran text-2xl" dir="rtl">
@@ -245,7 +253,8 @@ function LiveWords({
                   />
                 )}
                 <span
-                  className={clsx('absolute inset-y-0 right-0 rounded-full transition-[width] duration-100', complete ? 'bg-ok' : 'bg-gold')}
+                  ref={fillRef}
+                  className={clsx('absolute inset-y-0 right-0 rounded-full', complete ? 'bg-ok' : 'bg-gold')}
                   style={{ width: `${filledWidth}%` }}
                 />
                 {/* The finish line: where the obligation ends and choice begins. */}
@@ -302,13 +311,18 @@ function Recorder({
   elapsedMs,
   onStart,
   onStop,
+  ringRef,
 }: {
   recording: boolean
   busy: boolean
+  /** Only for the "too quiet" warning, which is read rather than watched. The ring itself is
+   * sized from the animation-frame loop through `ringRef`, so it tracks the voice directly
+   * instead of at whatever rate the page happens to re-render. */
   micLevel: number
   elapsedMs: number
   onStart: () => void
   onStop: () => void
+  ringRef?: (el: HTMLSpanElement | null) => void
 }) {
   const level = Math.min(1, Math.max(0, micLevel))
   const quiet = recording && elapsedMs > 1500 && level < 0.08
@@ -319,8 +333,9 @@ function Recorder({
         {recording && (
           <>
             <span
+              ref={ringRef}
               aria-hidden
-              className="absolute rounded-full bg-danger/20 transition-all duration-100"
+              className="absolute rounded-full bg-danger/20"
               style={{ width: `${72 + level * 44}px`, height: `${72 + level * 44}px` }}
             />
             <span aria-hidden className="absolute h-[84px] w-[84px] animate-ping rounded-full bg-danger/15" />
@@ -378,6 +393,12 @@ export function PracticePage() {
   const [acousticAlerts, setAcousticAlerts] = useState<AcousticAlert[]>([])
   const [qalqalahAlerts, setQalqalahAlerts] = useState<QalqalahAlert[]>([])
   const [nasalityAlerts, setNasalityAlerts] = useState<NasalityAlert[]>([])
+  /** The filled part of the live hold meter, written to directly each animation frame. */
+  const holdFillRef = useRef<HTMLSpanElement | null>(null)
+  /** The tracker revision the last React render reflected, so renders happen on events. */
+  const liveRevisionRef = useRef(-1)
+  /** The mic ring, likewise driven per frame rather than through a re-render. */
+  const micRingRef = useRef<HTMLSpanElement | null>(null)
   const [micError, setMicError] = useState<string | null>(null)
   const [liveSnapshot, setLiveSnapshot] = useState<LiveSnapshot | null>(null)
   const [passageMatch, setPassageMatch] = useState(0)
@@ -474,6 +495,7 @@ export function PracticePage() {
     setDiagnostics([])
     setOrthographyVariant(null)
     liveTrackerRef.current = null
+    liveRevisionRef.current = -1
   }
 
   // Selecting the ayah range with two independent selects: moving "from" forward pulls "to"
@@ -623,6 +645,16 @@ export function PracticePage() {
           analyserRef.current = analyser
 
           const timeDomain = new Float32Array(analyser.fftSize)
+          // One loop does everything that has to keep up with the voice: read the level,
+          // feed the tracker, and paint the two things that move continuously — the hold
+          // meter and the mic ring — straight onto their DOM nodes.
+          //
+          // Painting them through React state on an 80ms timer was what made the meter lag.
+          // Not only was 80ms plus a 100ms width transition already ~180ms behind the voice;
+          // re-rendering the whole passage twelve times a second on a phone starved the very
+          // animation frames that feed the tracker, so the frame deltas grew and the
+          // measurements themselves arrived late and coarse. React now re-renders only when
+          // the tracker says something discrete happened — a word opened or closed.
           const feedLoop = () => {
             const an = analyserRef.current
             const tr = liveTrackerRef.current
@@ -633,17 +665,37 @@ export function PracticePage() {
             const rms = Math.sqrt(sumSquares / timeDomain.length)
             latestRmsRef.current = rms
             tr.feed(rms, performance.now())
+
+            const hold = tr.currentHold()
+            const fill = holdFillRef.current
+            if (fill && hold) {
+              const span = hold.requiredMs + hold.optionalMs
+              fill.style.width = span > 0 ? `${Math.min(100, (hold.voicedMs / span) * 100)}%` : '0%'
+            }
+
+            const ring = micRingRef.current
+            if (ring) {
+              // Speech RMS sits well below 1, so scale it into a usable 0–1 meter range.
+              const level = Math.min(1, rms * 12)
+              const size = `${72 + level * 44}px`
+              ring.style.width = size
+              ring.style.height = size
+            }
+
+            if (tr.revision() !== liveRevisionRef.current) {
+              liveRevisionRef.current = tr.revision()
+              setLiveSnapshot(tr.snapshot())
+            }
             rafIdRef.current = requestAnimationFrame(feedLoop)
           }
           rafIdRef.current = requestAnimationFrame(feedLoop)
 
+          // Only the things a person reads rather than watches: the clock, and whether the
+          // recording is too quiet to hear. Once a second is plenty for both.
           snapshotIntervalRef.current = window.setInterval(() => {
-            const tr = liveTrackerRef.current
-            if (tr) setLiveSnapshot(tr.snapshot())
-            // Speech RMS sits well below 1, so scale it into a usable 0–1 meter range.
             setMicLevel(Math.min(1, latestRmsRef.current * 12))
             setElapsedMs(performance.now() - startedAtRef.current)
-          }, LIVE_SNAPSHOT_INTERVAL_MS)
+          }, LIVE_CLOCK_INTERVAL_MS)
         } catch {
           // Live per-word timing is a nice-to-have; recording itself still works without it.
         }
@@ -833,6 +885,9 @@ export function PracticePage() {
                           words={referenceWords.slice(r.start, r.end)}
                           liveWords={(liveSnapshot?.words ?? []).slice(r.start, r.end)}
                           holdProgress={holdProgress}
+                          fillRef={(el) => {
+                            holdFillRef.current = el
+                          }}
                         />
                       ) : (
                         <div className="rounded-xl border border-dashed border-line bg-line-soft/40 px-3 py-2.5 text-sm text-faint">
@@ -897,6 +952,9 @@ export function PracticePage() {
               elapsedMs={elapsedMs}
               onStart={startRecording}
               onStop={stopRecording}
+              ringRef={(el) => {
+                micRingRef.current = el
+              }}
             />
             {micError && <p className="rounded-xl border border-danger/40 bg-danger-soft px-4 py-3 text-sm font-bold text-danger">{micError}</p>}
           </div>

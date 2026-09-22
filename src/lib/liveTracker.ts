@@ -30,6 +30,18 @@ const GAP_MS = 150
 /** Safety cap: force-close a word that's been open far longer than any madd could justify. */
 const MAX_OVER_MS = 900
 const START_THR = 0.012
+/**
+ * The longest gap between two energy frames still counted as elapsed recitation.
+ *
+ * It exists to stop a backgrounded tab, where frames stop arriving for seconds at a time,
+ * from crediting all that silence to whatever word was open. But it was set at 90ms, barely
+ * above a frame at 60fps, and a phone busy re-rendering the page delivered frames 100–200ms
+ * apart — so the excess was discarded and every word measured short. Played at 8fps, a
+ * recitation that takes 600ms per word measured about 420ms: a third of the time simply
+ * vanished, and words a reciter held correctly were reported as rushed. 250ms still clamps a
+ * hidden tab hard while treating an ordinary hitch as the real time it is.
+ */
+const MAX_FRAME_DT_MS = 250
 const MIN_VOICED_MS = 70
 
 function tauTolerance(tau: number): number {
@@ -87,6 +99,21 @@ export class LiveTajweedTracker {
   private ratios: number[] = []
   private scale = 1
   private results: LiveWordResult[]
+  /**
+   * Bumped whenever something a React render depends on changes — a word opening or
+   * closing, the first sound, the end of the recording. The caller can then re-render on
+   * those moments alone instead of on a timer, and read the continuously-moving hold with
+   * currentHold() every animation frame without going through React at all. Re-rendering
+   * the page a dozen times a second to move one bar was what made the bar late: the
+   * renders starved the very animation frames that feed this tracker, so the measurements
+   * arrived in coarse jumps and the bar chased them.
+   */
+  private rev = 0
+  /** Whether the word being recited has already met what its rules require. Crossing that
+   * line is a discrete moment worth a render — it is when the meter completes and the word
+   * turns green — so it is tracked rather than recomputed from a continuously-moving value
+   * that React no longer sees. */
+  private requiredMet = false
 
   constructor(
     words: WordWithRules[],
@@ -105,7 +132,7 @@ export class LiveTajweedTracker {
   /** Feed one energy frame (rms 0..~1) with its timestamp in ms. */
   feed(rms: number, tMs: number): void {
     if (this.finished || !this.words.length) return
-    const dt = this.lastT ? Math.max(0, Math.min(90, tMs - this.lastT)) : 16
+    const dt = this.lastT ? Math.max(0, Math.min(MAX_FRAME_DT_MS, tMs - this.lastT)) : 16
     this.lastT = tMs
 
     const thr = Math.max(this.floorEma * 2.1, START_THR * 0.6, 0.007)
@@ -113,7 +140,10 @@ export class LiveTajweedTracker {
     const voiced = rms > thr
 
     if (voiced) {
-      if (!this.started && rms > START_THR) this.started = true
+      if (!this.started && rms > START_THR) {
+        this.started = true
+        this.rev++
+      }
       if (!this.inWord) {
         if (this.cursor + 1 >= this.words.length) return
         this.cursor++
@@ -121,9 +151,19 @@ export class LiveTajweedTracker {
         this.voicedMs = 0
         this.silenceMs = 0
         this.results[this.cursor] = { status: 'current', measuredMs: 0 }
+        this.requiredMet = false
+        this.rev++
       }
       this.voicedMs += dt
       this.silenceMs = 0
+
+      if (!this.requiredMet) {
+        const required = (this.expectedMs[this.cursor] ?? 0) * this.scale
+        if (required > 0 && this.voicedMs >= required) {
+          this.requiredMet = true
+          this.rev++
+        }
+      }
 
       const exp = this.expectedMs[this.cursor]
       if (this.voicedMs > exp * 2.4 + MAX_OVER_MS) this.closeCurrent()
@@ -151,6 +191,7 @@ export class LiveTajweedTracker {
     this.inWord = false
     this.voicedMs = 0
     this.silenceMs = 0
+    this.rev++
     this.onWord?.(i, status, measured)
   }
 
@@ -159,6 +200,28 @@ export class LiveTajweedTracker {
     if (this.finished) return
     if (this.inWord) this.closeCurrent()
     this.finished = true
+    this.rev++
+  }
+
+  /** Changes only at the discrete moments listed on `rev`. Cheap enough to poll per frame. */
+  revision(): number {
+    return this.rev
+  }
+
+  /**
+   * How long the word being recited *right now* has been voiced, against what its rules
+   * require and what they merely permit beyond that. Null between words.
+   *
+   * Allocates one small object and reads no arrays, so the animation-frame loop can call it
+   * at display rate and write the bar's width straight to the DOM.
+   */
+  currentHold(): { voicedMs: number; requiredMs: number; optionalMs: number } | null {
+    if (!this.inWord || this.cursor < 0) return null
+    return {
+      voicedMs: this.voicedMs,
+      requiredMs: Math.round((this.expectedMs[this.cursor] ?? 0) * this.scale),
+      optionalMs: Math.round((this.optionalMs[this.cursor] ?? 0) * this.scale),
+    }
   }
 
   snapshot(): LiveSnapshot {
