@@ -210,6 +210,20 @@
   --tw-idgham_mutaqaribayn: #a1793c;
   --tw-iqlab: #0f9fd8;
   --tw-ghunnah: #ee7b14;
+  --tw-izhar_halqi: #5b6b7a;
+  --tw-izhar_shafawi: #6b7a8f;
+  --tw-madda_badal: #6a63d6;
+  --tw-madda_sila_sughra: #3f7fd0;
+  --tw-madda_sila_kubra: #2c5fc0;
+  --tw-madda_leen: #7a8fd0;
+  --tw-madda_arid: #4a6fc8;
+  --tw-madda_iwad: #5f86d8;
+  --tw-ra_mufakhkhama: #a8561f;
+  --tw-ra_muraqqaqa: #1f8a70;
+  --tw-ra_wajhan: #8a6b1f;
+  --tw-lam_jalalah_mufakhkhama: #9a4a2a;
+  --tw-lam_jalalah_muraqqaqa: #2a7a6a;
+  --tw-istila: #8a5a2a;
 }
 
 [data-theme="night"],
@@ -231,6 +245,20 @@
   --tw-idgham_mutaqaribayn: #c9a468;
   --tw-iqlab: #56d0f5;
   --tw-ghunnah: #ffa04d;
+  --tw-izhar_halqi: #9fb0c0;
+  --tw-izhar_shafawi: #aebccd;
+  --tw-madda_badal: #a79fff;
+  --tw-madda_sila_sughra: #7fb0ff;
+  --tw-madda_sila_kubra: #6f9bff;
+  --tw-madda_leen: #aebcff;
+  --tw-madda_arid: #8aa8ff;
+  --tw-madda_iwad: #9dbcff;
+  --tw-ra_mufakhkhama: #f0a06a;
+  --tw-ra_muraqqaqa: #5fd9bb;
+  --tw-ra_wajhan: #e0c070;
+  --tw-lam_jalalah_mufakhkhama: #f09a7a;
+  --tw-lam_jalalah_muraqqaqa: #6fd9c4;
+  --tw-istila: #e0a070;
 }
 
 html,

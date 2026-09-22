@@ -1,4 +1,5 @@
 import type { TajweedRuleId, TajweedSegment } from '../types/quran'
+import { deriveUthmaniRules } from './uthmaniRules'
 
 /**
  * api.alquran.cloud `quran-tajweed` edition single-letter rule codes → rule ids.
@@ -258,6 +259,162 @@ export const TAJWEED_RULES: TajweedRuleInfo[] = [
       'حرف مرسوم في خط المصحف العثماني ولا يُنطق حال التلاوة — مثل واو (أُولَئِكَ) وألف (فَلْيَعْبُدُوا) الزائدة في الرسم، ولام (ٱلْحَمْدُ) عند الوصل.',
     example: 'أُولَئِكَ · فَلْيَعْبُدُوا',
   },
+
+  /* ─── Derived from the Uthmani script (see uthmaniRules.ts) ─── */
+
+  {
+    id: 'izhar_halqi',
+    category: 'noon_meem',
+    nameAr: 'الإظهار الحلقي',
+    nameEn: 'Izhār Halqī',
+    color: 'var(--tw-izhar_halqi)',
+    description:
+      'إذا جاء بعد النون الساكنة أو التنوين أحد حروف الحلق الستة، أُظهرت النون من مخرجها واضحةً بلا غُنّة زائدة ولا إدغام — وسُمّي حلقيًّا لأن حروفه كلها تخرج من الحلق.',
+    letters: 'ء ه ع ح غ خ',
+    example: 'مَنْ ءَامَنَ · عَلِيمٌ حَكِيمٌ',
+  },
+  {
+    id: 'izhar_shafawi',
+    category: 'noon_meem',
+    nameAr: 'الإظهار الشفوي',
+    nameEn: 'Izhār Shafawī',
+    color: 'var(--tw-izhar_shafawi)',
+    description:
+      'الميم الساكنة إذا جاء بعدها أيّ حرف غير الباء والميم، تُنطق ظاهرةً من الشفتين بلا غُنّة زائدة. ويتأكّد إظهارها عند الواو والفاء خاصّةً لقرب مخرجيهما منها.',
+    letters: 'كل الحروف عدا ب م',
+    example: 'أَمْ لَمْ · لَعَلَّكُمْ تَتَّقُونَ',
+  },
+  {
+    id: 'madda_badal',
+    category: 'madd',
+    nameAr: 'مَدُّ البَدَل',
+    nameEn: 'Madd al-Badal',
+    color: 'var(--tw-madda_badal)',
+    durationAr: 'حركتان',
+    description:
+      'أن تتقدّم الهمزةُ على حرف المدّ في الكلمة نفسها، وسُمّي بدلًا لأن حرف المدّ فيه مُبدَل من همزة ساكنة (ءَاْمَنَ ← ءَامَنَ). ويُمدّ عند حفص حركتين كالمدّ الطبيعي.',
+    letters: 'همزة + حرف مدّ',
+    example: 'ءَامَنُوا · إِيمَانًا · أُوتُوا',
+  },
+  {
+    id: 'madda_sila_sughra',
+    category: 'madd',
+    nameAr: 'مَدُّ الصِّلَة الصُّغْرَى',
+    nameEn: 'Madd al-Silah al-Sughrā',
+    color: 'var(--tw-madda_sila_sughra)',
+    durationAr: 'حركتان',
+    description:
+      'هاء الضمير المفردة الواقعة بين متحرّكين تُوصَل وصلًا بواو إن كانت مضمومة وبياء إن كانت مكسورة، فتُمدّ حركتين. ويضبطها المصحف بواو صغيرة أو ياء صغيرة فوق الهاء.',
+    letters: 'هـ الضمير بين متحركين',
+    example: 'إِنَّهُۥ كَانَ · بِهِۦ بَصِيرًا',
+  },
+  {
+    id: 'madda_sila_kubra',
+    category: 'madd',
+    nameAr: 'مَدُّ الصِّلَة الكُبْرَى',
+    nameEn: 'Madd al-Silah al-Kubrā',
+    color: 'var(--tw-madda_sila_kubra)',
+    durationAr: 'أربع حركات',
+    description:
+      'هاء الضمير الموصولة إذا جاء بعدها همزة قطع في أول الكلمة التالية، فتُمدّ مدًّا كالمنفصل أربع حركات عند حفص — لأنها صارت حرف مدّ لقيه همزٌ في كلمة أخرى.',
+    letters: 'هـ الضمير + همزة قطع',
+    example: 'مَالَهُۥٓ أَخْلَدَهُۥ · عِندَهُۥٓ إِلَّا',
+  },
+  {
+    id: 'madda_leen',
+    category: 'madd',
+    nameAr: 'مَدُّ اللِّين',
+    nameEn: 'Madd al-Līn',
+    color: 'var(--tw-madda_leen)',
+    durationAr: 'حركتان (وقفًا)',
+    description:
+      'الواو أو الياء الساكنة المفتوح ما قبلها، إذا وقع بعدها حرف يُسكَّن للوقف، مُدّت مدًّا لينًا سهلًا. ولا لين في نحو (يَوْمَ) وصلًا لأن ما بعدها متحرّك.',
+    letters: 'وْ / يْ بعد فتحة',
+    example: 'خَوْفٍ · قُرَيْشٍ · ٱلْبَيْتِ',
+  },
+  {
+    id: 'madda_arid',
+    category: 'madd',
+    nameAr: 'المَدُّ العَارِضُ لِلسُّكُون',
+    nameEn: 'Madd ʿĀriḍ lil-Sukūn',
+    color: 'var(--tw-madda_arid)',
+    durationAr: 'حركتان أو أربع أو ستّ (وقفًا)',
+    description:
+      'أن يأتي بعد حرف المدّ حرفٌ سكونه عارضٌ بسبب الوقف لا أصليّ. وللقارئ فيه ثلاثة أوجه: القصر حركتين، والتوسّط أربعًا، والإشباع ستًّا — ويلزم اطّراد وجهٍ واحد.',
+    letters: 'حرف مدّ + آخر موقوف عليه',
+    example: 'ٱلْعَالَمِينَ · نَسْتَعِينُ',
+  },
+  {
+    id: 'madda_iwad',
+    category: 'madd',
+    nameAr: 'مَدُّ العِوَض',
+    nameEn: 'Madd al-ʿIwaḍ',
+    color: 'var(--tw-madda_iwad)',
+    durationAr: 'حركتان (وقفًا)',
+    description:
+      'الوقف على تنوين الفتح، فيُبدَل التنوين ألفًا تُمدّ حركتين عوضًا عنه. ولا يدخل في ذلك تنوين الرفع والجرّ، ولا التاء المربوطة إذ يُوقف عليها هاءً ساكنة.',
+    letters: 'تنوين فتح عند الوقف',
+    example: 'عَلِيمًا ← عَلِيمَا · مَآءً ← مَآءَا',
+  },
+  {
+    id: 'ra_mufakhkhama',
+    category: 'other',
+    nameAr: 'راء مُفخَّمة',
+    nameEn: 'Rāʾ Mufakhkhamah',
+    color: 'var(--tw-ra_mufakhkhama)',
+    description:
+      'تُفخَّم الراء فيُستعلى بها إلى أعلى الحنك: إذا كانت مفتوحة أو مضمومة، أو ساكنةً بعد فتح أو ضمّ، أو ساكنةً بعد كسرٍ عارض، أو بعدها حرف استعلاء غير مكسور.',
+    example: 'رَبِّ · ٱلْقُرْءَان · وَٱنْحَرْ',
+  },
+  {
+    id: 'ra_muraqqaqa',
+    category: 'other',
+    nameAr: 'راء مُرقَّقة',
+    nameEn: 'Rāʾ Muraqqaqah',
+    color: 'var(--tw-ra_muraqqaqa)',
+    description:
+      'تُرقَّق الراء فتنحف ويَنزل بها عن الحنك: إذا كانت مكسورة، أو ساكنةً بعد كسرٍ أصليّ وليس بعدها حرف استعلاء، أو ساكنةً بعد ياءٍ ساكنة قبلها كسر.',
+    example: 'رِجَالٌ · فِرْعَوْن · خَيْرٌ',
+  },
+  {
+    id: 'ra_wajhan',
+    category: 'other',
+    nameAr: 'راء يجوز فيها الوجهان',
+    nameEn: 'Rāʾ — Both Permitted',
+    color: 'var(--tw-ra_wajhan)',
+    description:
+      'مواضع اجتمع فيها موجِبُ التفخيم وموجِبُ الترقيق فجاز الوجهان، كالراء الساكنة بعد كسرٍ ويليها حرف استعلاء مكسور (فِرْقٍ)، أو الساكنة بعد ياء ساكنة عند بعض الأداء.',
+    example: 'فِرْقٍ · مِصْرَ · ٱلْقِطْرِ',
+  },
+  {
+    id: 'lam_jalalah_mufakhkhama',
+    category: 'lam',
+    nameAr: 'لام لفظ الجلالة مُفخَّمة',
+    nameEn: 'Lām of Allāh — Heavy',
+    color: 'var(--tw-lam_jalalah_mufakhkhama)',
+    description: 'تُفخَّم لام لفظ الجلالة (ٱللَّه) إذا سبقها فتحٌ أو ضمّ، فتُنطق غليظة مستعلية.',
+    example: 'قَالَ ٱللَّهُ · عَبْدُ ٱللَّهِ',
+  },
+  {
+    id: 'lam_jalalah_muraqqaqa',
+    category: 'lam',
+    nameAr: 'لام لفظ الجلالة مُرقَّقة',
+    nameEn: 'Lām of Allāh — Light',
+    color: 'var(--tw-lam_jalalah_muraqqaqa)',
+    description: 'تُرقَّق لام لفظ الجلالة إذا سبقها كسرٌ، سواء كان الكسر أصليًّا أم عارضًا.',
+    example: 'بِسْمِ ٱللَّهِ · لِلَّهِ',
+  },
+  {
+    id: 'istila',
+    category: 'other',
+    nameAr: 'حروف الاستعلاء (تفخيم)',
+    nameEn: 'Istiʿlāʾ (Heavy Letters)',
+    color: 'var(--tw-istila)',
+    description:
+      'سبعة أحرف يستعلي بها اللسان إلى الحنك الأعلى فتُنطق مفخَّمة دائمًا، مجموعةٌ في قولهم (خُصَّ ضَغْطٍ قِظْ)، وأقواها تفخيمًا المفتوح الذي بعده ألف.',
+    letters: 'خ ص ض غ ط ق ظ',
+    example: 'ٱلصَّلَاة · طَه · قَالَ',
+  },
 ]
 
 export const TAJWEED_RULE_MAP: Record<TajweedRuleId, TajweedRuleInfo> = Object.fromEntries(
@@ -294,10 +451,47 @@ export function segmentsToWords(segments: TajweedSegment[]): WordWithRules[] {
     }
   }
   flush()
-  return words
+  return withDerivedRules(words)
 }
 
-const LOW_SALIENCE_RULES = new Set<TajweedRuleId>(['ham_wasl', 'laam_shamsiyah', 'slnt'])
+/**
+ * Adds the rules the edition leaves unmarked (see uthmaniRules.ts) to each word, keeping
+ * the marked ones first since they are authoritative for the letters they cover.
+ *
+ * An ayah's last word is treated as stopped on, which is what makes the madds of līn, ʿāriḍ
+ * and ʿiwaḍ apply there — they exist only at a pause, and an ayah end is one. A derived rule
+ * is dropped when the edition already marks something for that word, so a marked ikhfāʾ is
+ * never shadowed by a derived iẓhār drawn from the same letters.
+ */
+function withDerivedRules(words: WordWithRules[]): WordWithRules[] {
+  return words.map((w, i) => {
+    const derived = deriveUthmaniRules(w.word, words[i + 1]?.word ?? '', words[i - 1]?.word ?? '', i === words.length - 1)
+    const existing = new Set(w.rules)
+    return { word: w.word, rules: [...w.rules, ...derived.filter((r) => !existing.has(r))] }
+  })
+}
+
+/**
+ * Rules that are true of a great many words and so say little about any one of them. The
+ * heavy letters in particular appear in a large share of the Qur'an, and the heaviness of a
+ * rāʾ or the lām of the divine name is a property of nearly every word containing them — if
+ * these decided a word's colour, almost the whole passage would take their hue and the madd
+ * or ghunnah actually worth noticing would be buried. They stay available in the word's rule
+ * list and in the legend; they just do not win the colour.
+ */
+const LOW_SALIENCE_RULES = new Set<TajweedRuleId>([
+  'ham_wasl',
+  'laam_shamsiyah',
+  'slnt',
+  'istila',
+  'izhar_halqi',
+  'izhar_shafawi',
+  'ra_mufakhkhama',
+  'ra_muraqqaqa',
+  'ra_wajhan',
+  'lam_jalalah_mufakhkhama',
+  'lam_jalalah_muraqqaqa',
+])
 
 /** Picks the most visually informative rule to represent a word carrying several
  * (e.g. hamzat-wasl + laam-shamsiyah), preferring madd/qalqalah/ghunnah/noon-meem

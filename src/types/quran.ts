@@ -1,4 +1,5 @@
 export type TajweedRuleId =
+  // Marked directly by the alquran.cloud `quran-tajweed` edition.
   | 'ham_wasl'
   | 'laam_shamsiyah'
   | 'slnt'
@@ -16,6 +17,23 @@ export type TajweedRuleId =
   | 'idgham_mutaqaribayn'
   | 'iqlab'
   | 'ghunnah'
+  // Derived from the Uthmani script itself — see uthmaniRules.ts. The edition only marks
+  // rules that *change* a sound, so the rules below (which leave it plain, or which apply
+  // only when stopping) carry no markup and have to be worked out from the text.
+  | 'izhar_halqi'
+  | 'izhar_shafawi'
+  | 'madda_badal'
+  | 'madda_sila_sughra'
+  | 'madda_sila_kubra'
+  | 'madda_leen'
+  | 'madda_arid'
+  | 'madda_iwad'
+  | 'ra_mufakhkhama'
+  | 'ra_muraqqaqa'
+  | 'ra_wajhan'
+  | 'lam_jalalah_mufakhkhama'
+  | 'lam_jalalah_muraqqaqa'
+  | 'istila'
 
 export interface TajweedSegment {
   text: string

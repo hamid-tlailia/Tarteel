@@ -24,6 +24,14 @@ const MADD_HARAKAT: Partial<Record<TajweedRuleId, number>> = {
   madda_permissible: 4,
   madda_obligatory: 4.5,
   madda_necessary: 6,
+  // Derived from the script rather than marked by the edition — see uthmaniRules.ts.
+  madda_badal: 2,
+  madda_sila_sughra: 2,
+  madda_sila_kubra: 4,
+  madda_leen: 2,
+  // Two, four or six are all permitted; the middle is the fairest thing to measure against.
+  madda_arid: 4,
+  madda_iwad: 2,
 }
 
 const GHUNNA_RULES = new Set<TajweedRuleId>([

@@ -21,6 +21,14 @@ const MADD_RULES = new Set<TajweedRuleId>([
   'madda_permissible',
   'madda_obligatory',
   'madda_necessary',
+  // Derived from the script rather than marked by the edition — see uthmaniRules.ts. Their
+  // duration is checkable exactly like the marked madds', so they are verified the same way.
+  'madda_badal',
+  'madda_sila_sughra',
+  'madda_sila_kubra',
+  'madda_leen',
+  'madda_arid',
+  'madda_iwad',
 ])
 
 /** Rules whose performance is a held nasal sound of about two ḥarakāt. Their duration is
