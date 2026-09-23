@@ -9,24 +9,22 @@ import { Dropdown } from '../components/Dropdown'
 import { StopIcon } from '../components/RecorderIcons'
 import { primaryRule, segmentsToWords, TAJWEED_RULE_MAP, type WordWithRules } from '../lib/tajweed'
 import { normalizeArabic } from '../lib/arabicText'
-import { alignWords, type AlignedWord } from '../lib/alignment'
-import {
-  auditHeldRulesForced,
-  auditHeldRulesFromFreeDecode,
-  detectRecitedPace,
-  faultsFrom,
-  type AcousticAlert,
-} from '../lib/acousticTajweed'
+import type { AlignedWord } from '../lib/alignment'
+import type { AcousticAlert } from '../lib/acousticTajweed'
 import { DEFAULT_PACE_ID, PACES, paceOf, type PaceId, type PaceProfile } from '../lib/recitationPace'
 import { DEFAULT_RECITER_ID, RECITERS, reciterOf } from '../lib/reciters'
 import { buildReferenceTiming } from '../lib/referenceRecitation'
-import { followScore, type ReferenceTiming } from '../lib/referenceTiming'
-import { auditQalqalah, type QalqalahAlert } from '../lib/qalqalah'
-import { collapseRepeatedWords } from '../lib/repetition'
-import { scoreTranscriptMatch } from '../lib/transcriptMatch'
+import type { ReferenceTiming } from '../lib/referenceTiming'
+import type { QalqalahAlert } from '../lib/qalqalah'
 import { findPassageDrift, type PassageDrift } from '../lib/passageDrift'
 import { buildCoachTips } from '../lib/coach'
-import { auditGhunnahNasality, measureWordTimbre, type NasalityAlert } from '../lib/nasality'
+import type { NasalityAlert } from '../lib/nasality'
+import { analyzeRecitation } from '../lib/analysis'
+import {
+  BUNDLE_FORMAT,
+  bundleAudio,
+  type AttemptBundle,
+} from '../lib/attemptBundle'
 import {
   bucketByAyah,
   buildWordVerdicts,
@@ -58,15 +56,6 @@ const MIN_SPEECH_SAMPLES = 8000 // ~0.5s at 16kHz, after silence trimming
 // in liveTracker.ts. Not user-configurable yet; a reasonable middle ground for a first pass.
 const LIVE_TAU = 0.45
 const LIVE_CLOCK_INTERVAL_MS = 500
-
-function hypWordsFromResult(text: string, chunks: TimedChunk[]) {
-  if (chunks.length > 0) {
-    const raw = chunks.map((c) => c.text.trim())
-    return { raw, normalized: raw.map(normalizeArabic) }
-  }
-  const raw = text.split(/\s+/).filter(Boolean)
-  return { raw, normalized: raw.map(normalizeArabic) }
-}
 
 /** The raw measurements behind one word's verdict, surfaced for threshold tuning. */
 interface WordDiagnostic {
@@ -453,6 +442,23 @@ export function PracticePage() {
    * see findings.ts. */
   const [checks, setChecks] = useState<DetectorCheck[]>([])
   /**
+   * Everything needed to replay the last attempt without the model.
+   *
+   * Kept because the thresholds in this app are reasoned, not measured, and the only way to
+   * find out whether they are right is to put real recitations in front of a tajweed teacher
+   * and compare. An attempt nobody can export is an attempt nobody can learn from. See
+   * attemptBundle.ts.
+   */
+  const [lastAttempt, setLastAttempt] = useState<{
+    text: string
+    chunks: TimedChunk[]
+    confidences: number[] | null
+    timings: ([number, number] | null)[] | null
+    audio: Float32Array
+    report: TajweedReport
+    verdicts: WordVerdict[]
+  } | null>(null)
+  /**
    * The riwāya being judged by. Only Ḥafṣ is supported, and saying which one out loud is part
    * of the judgement: the text, the derived rules and the madd measures are all his. A reader
    * by Warsh is told the app cannot grade them rather than graded by the wrong book.
@@ -653,7 +659,6 @@ export function PracticePage() {
     return { referenceWords: words, ayahRanges: ranges }
   }, [selectedAyahs])
 
-  const referenceNormalized = useMemo(() => referenceWords.map((w) => normalizeArabic(w.word)), [referenceWords])
 
   // Used only to tell how far the reciter has actually gotten (an ayah with no matched
   // hypothesis word yet hasn't been "reached") and to surface extra/unmatched words — not
@@ -757,6 +762,7 @@ export function PracticePage() {
     setQalqalahAlerts([])
     setNasalityAlerts([])
     setChecks([])
+    setLastAttempt(null)
     setRecitedPace(null)
     setLiveNotes([])
     setFollow(null)
@@ -816,44 +822,57 @@ export function PracticePage() {
     resultConfidences: number[] | null,
     resultTimings: ([number, number] | null)[] | null,
     audioForAnalysis: Float32Array,
+    recordedRms: number | null,
   ) {
-    const { raw, normalized } = hypWordsFromResult(text, resultChunks)
-    // Defend against ASR hallucination loops (e.g. the same word repeated dozens of times
-    // over a silent stretch) before they ever reach the aligner.
-    const collapsed = collapseRepeatedWords(raw, normalized, resultChunks)
-    const displayText = collapsed.raw.join(' ') || text
+    // The judgement itself lives in analysis.ts, so that the evaluation harness replays the
+    // very code a reciter runs rather than a copy of it — see the note at the top of that
+    // file. What stays here is what only a screen needs: state, the diagnostics table, and
+    // the memory-slip hint.
+    const analysis = analyzeRecitation({
+      referenceWords,
+      ayahRanges,
+      text,
+      chunks: resultChunks,
+      wordConfidences: resultConfidences,
+      wordTimings: resultTimings,
+      audio: audioForAnalysis,
+      sampleRate: TARGET_SAMPLE_RATE,
+      paceId,
+      reference,
+      inputRms: recordedRms,
+    })
 
-    setHypothesis(displayText)
+    setHypothesis(analysis.hypothesis)
     setWordConfidences(resultConfidences)
-    const result = alignWords(referenceNormalized, collapsed.normalized)
-    setAligned(result)
+    setAligned(analysis.aligned)
+    setPassageMatch(analysis.passageMatch)
+    setAcousticAlerts(analysis.acousticAlerts)
+    setQalqalahAlerts(analysis.qalqalahAlerts)
+    setNasalityAlerts(analysis.nasalityAlerts)
+    setChecks(analysis.checks)
+    // What the reciter actually read in, whatever they selected — reported back rather than
+    // silently graded against the wrong yardstick.
+    setRecitedPace(analysis.recitedPace)
+    // How closely the learner's reading follows the shape of the reciter's — proportions,
+    // not speed, so reading slower than the shaykh is not itself a divergence.
+    setFollow(analysis.follow)
 
-    // How much this transcription looks like the selected passage at all — shown to the
-    // reciter when it is too low for the score to mean anything.
-    const passage = scoreTranscriptMatch(collapsed.normalized, referenceNormalized)
-    setPassageMatch(passage.score)
     // A memory slip into a similar ayah is the commonest ḥifẓ failure and the one "did not
     // match the selected passage" explains worst. The surah is already downloaded.
     setDrift(
       findPassageDrift(
-        collapsed.normalized,
+        analysis.chunks.length > 0
+          ? analysis.chunks.map((c) => normalizeArabic(c.text.trim()))
+          : analysis.hypothesis.split(/\s+/).filter(Boolean).map(normalizeArabic),
         ayahs,
         new Set(selectedAyahs.map((a) => a.numberInSurah)),
-        passage.score,
+        analysis.passageMatch,
       ),
     )
 
-    const verdicts = buildWordVerdicts(result, resultConfidences, referenceWords.length, ayahRanges)
-
-    // What the words actually *sounded* like, as opposed to how long they took. This is the
-    // only evidence that can settle a ghunnah on a short word: two ḥarakāt of nasal sound
-    // fit inside the error in the word boundaries themselves, so «عَمَّ» recited without one
-    // is, to a clock, a fast «عَمَّ» recited with one. See spectral.ts and nasality.ts.
-    const timbre = resultTimings ? measureWordTimbre(audioForAnalysis, TARGET_SAMPLE_RATE, resultTimings) : []
-
     // The raw numbers behind every verdict. The thresholds these feed are reasoned rather
     // than measured — there is no corpus of real recitations to calibrate them against — so
-    // the panel that shows this is how a real attempt on a real device gets turned into
+    // this panel, and the export beside it, are how a real attempt on a real device becomes
     // evidence for tuning them.
     setDiagnostics(
       referenceWords.map((refWord, i) => {
@@ -863,65 +882,37 @@ export function PracticePage() {
           refIndex: i,
           word: refWord.word,
           confidence: resultConfidences?.[i] ?? null,
-          freeStatus: verdicts[i]?.freeStatus ?? null,
+          freeStatus: analysis.verdicts[i]?.freeStatus ?? null,
           measuredMs: timing ? Math.round((timing[1] - timing[0]) * 1000) : null,
           expectedMs: expected.total,
           expectedWithoutMaddMs: expected.withoutMadd,
-          nasalDb: timbre[i]?.peakNasalDb ?? null,
-          centroidHz: timbre[i]?.centroidHz ?? null,
+          nasalDb: analysis.timbre[i]?.peakNasalDb ?? null,
+          centroidHz: analysis.timbre[i]?.centroidHz ?? null,
         }
       }),
     )
-    const correctRefIndices = new Set(verdicts.filter((v) => v.status === 'correct').map((v) => v.refIndex))
 
-    // Forced-alignment timing (precise, from the known text) is preferred; fall back to
-    // the free decode's approximate word timestamps when it isn't available this time.
-    //
-    // Both paths now return the whole audit — every ruling examined, with what was found and
-    // why — and the alerts are the faults inside it. The passes matter as much as the faults:
-    // without them there is no telling a verified ruling from one nothing could reach.
-    const durationChecks = resultTimings
-      ? auditHeldRulesForced(referenceWords, resultTimings, correctRefIndices, paceId, reference)
-      : collapsed.chunks.length > 0
-        ? auditHeldRulesFromFreeDecode(result, referenceWords, collapsed.chunks, correctRefIndices, paceId)
-        : []
-    const acoustic = faultsFrom(durationChecks, referenceWords)
-    // What the reciter actually read in, whatever they selected — reported back rather than
-    // silently graded against the wrong yardstick.
-    setRecitedPace(resultTimings ? detectRecitedPace(referenceWords, resultTimings, correctRefIndices, paceId) : null)
-    // How closely the learner's reading follows the shape of the reciter's — proportions,
-    // not speed, so reading slower than the shaykh is not itself a divergence.
-    setFollow(resultTimings && reference ? followScore(referenceWords, resultTimings, reference) : null)
-    const qalqalahChecks = resultTimings
-      ? auditQalqalah(audioForAnalysis, referenceWords, resultTimings, correctRefIndices)
-      : []
-    // Judged against this reciter's own non-nasal words in this same recording — absolute
-    // levels say nothing across microphones and voices.
-    const nasalityChecks = auditGhunnahNasality(referenceWords, timbre, correctRefIndices)
-    const qalqalah = qalqalahChecks
-      .filter((c) => c.outcome === 'short' || c.outcome === 'absent')
-      .map((c) => ({ refIndex: c.refIndex, word: referenceWords[c.refIndex]?.word ?? '' }))
-    const nasality: NasalityAlert[] = nasalityChecks
-      .filter((c) => c.outcome === 'short' || c.outcome === 'absent')
-      .map((c) => ({
-        refIndex: c.refIndex,
-        word: referenceWords[c.refIndex]?.word ?? '',
-        rule: c.rules[0],
-        measuredDb: c.measuredDb ?? 0,
-        baselineDb: c.baselineDb ?? 0,
-        requiredDb: c.requiredDb ?? 0,
-        severity: c.outcome === 'absent' ? 'severe' : 'mild',
-      }))
-    setAcousticAlerts(acoustic)
-    setQalqalahAlerts(qalqalah)
-    setNasalityAlerts(nasality)
-    setChecks([...durationChecks, ...qalqalahChecks, ...nasalityChecks])
+    // Everything needed to replay this attempt offline, held until the reciter asks for it.
+    setLastAttempt({
+      text,
+      chunks: analysis.chunks,
+      confidences: resultConfidences,
+      timings: resultTimings,
+      audio: audioForAnalysis,
+      report: analysis.report,
+      verdicts: analysis.verdicts,
+    })
 
-    if (verdicts.some((v) => v.status === 'wrong') || acoustic.length > 0 || qalqalah.length > 0 || nasality.length > 0) {
+    if (
+      analysis.verdicts.some((v) => v.status === 'wrong') ||
+      analysis.acousticAlerts.length > 0 ||
+      analysis.qalqalahAlerts.length > 0 ||
+      analysis.nasalityAlerts.length > 0
+    ) {
       vibrate([80, 60, 80])
     }
 
-    return verdicts
+    return analysis.verdicts
   }
 
   const startRecording = async () => {
@@ -1077,7 +1068,7 @@ export function PracticePage() {
         orthographyVariant,
       } = await whisper.transcribe(trimmed, referenceWords.map((w) => w.word))
       setOrthographyVariant(orthographyVariant)
-      const verdicts = applyResult(text, resultChunks, confidences, timings, trimmed)
+      const verdicts = applyResult(text, resultChunks, confidences, timings, trimmed, conditioned.inputRms)
       if (meta) {
         const reached = verdicts.filter((v) => v.status !== 'unreached')
         const correct = reached.filter((v) => v.status === 'correct').length
@@ -1099,6 +1090,58 @@ export function PracticePage() {
     } finally {
       setBusy(false)
     }
+  }
+
+  /**
+   * Writes the last attempt out as a bundle a teacher can label and the harness can replay.
+   *
+   * The audio goes with it. Without the recording a label is unverifiable, and a corpus of
+   * unverifiable labels is worse than none — so this is one file, self-contained, and the
+   * reciter is told plainly that it contains their voice before they hand it to anyone.
+   */
+  function exportAttempt() {
+    if (!lastAttempt) return
+    const bundle: AttemptBundle = {
+      format: BUNDLE_FORMAT,
+      id: crypto.randomUUID(),
+      recordedAt: new Date().toISOString(),
+      passage: {
+        surah: surahNumber,
+        fromAyah,
+        toAyah,
+        ayahMarkup: selectedAyahs.map((a) => a.text),
+      },
+      conditions: {
+        paceId,
+        riwayaId,
+        deviceAr: typeof navigator === 'undefined' ? undefined : navigator.userAgent,
+      },
+      asr: {
+        text: lastAttempt.text,
+        chunks: lastAttempt.chunks,
+        wordTimings: lastAttempt.timings ?? [],
+        wordConfidences: lastAttempt.confidences,
+        orthographyVariant,
+      },
+      audio: bundleAudio(lastAttempt.audio, TARGET_SAMPLE_RATE),
+      appVerdict: {
+        faultedRules: lastAttempt.report.faulted.map((f) => ({ refIndex: f.refIndex, rule: f.rule, outcome: f.outcome })),
+        undecidedRules: lastAttempt.report.undecided.map((f) => ({
+          refIndex: f.refIndex,
+          rule: f.rule,
+          reason: f.reason ?? 'unknown',
+        })),
+        wordsCorrect: lastAttempt.verdicts.filter((v) => v.status === 'correct').length,
+        wordsReached: lastAttempt.verdicts.filter((v) => v.status !== 'unreached').length,
+      },
+    }
+    const blob = new Blob([JSON.stringify(bundle, null, 1)], { type: 'application/json' })
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = `wartil-${surahNumber}-${fromAyah}-${toAyah}-${bundle.id.slice(0, 8)}.json`
+    link.click()
+    URL.revokeObjectURL(url)
   }
 
   const ayahOptions = Array.from({ length: ayahs.length }, (_, i) => i + 1)
@@ -1804,6 +1847,22 @@ export function PracticePage() {
                 </table>
               </div>
             </details>
+          )}
+
+          {/* The one thing a learner can do about a limitation they have just been shown: hand
+              the attempt to someone who can hear it. It is also how the thresholds in this app
+              stop being guesses — see attemptBundle.ts and docs/evaluation.md. */}
+          {lastAttempt && (
+            <div className="rounded-xl border border-line-soft bg-bg/40 p-4">
+              <button type="button" onClick={exportAttempt} className="btn-accent w-full">
+                ⬇︎ صدّر هذه المحاولة لمراجعة معلّم
+              </button>
+              <p className="mt-2 text-xs leading-relaxed text-faint">
+                ملف واحد فيه <span className="font-bold">تسجيل صوتك</span> والمقطع والقياسات وما حكم به التطبيق. يستطيع
+                معلّم التجويد أن يسمعه ويضع حكمه على كل قاعدة، فيُقاس التطبيق على حكمه لا على تقديرنا. لا يُرفع إلى أي
+                خادم — يُحفَظ في جهازك وأنت تقرّر من تعطيه.
+              </p>
+            </div>
           )}
 
           {diagnostics.length > 0 && (
