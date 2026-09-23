@@ -83,12 +83,24 @@ const REFINES: Partial<Record<TajweedRuleId, TajweedRuleId>> = {
 export function applyDerivedRuleSpans(segments: TajweedSegment[]): TajweedSegment[] {
   const chars: string[] = []
   const rules: (TajweedRuleId | undefined)[] = []
-  for (const seg of segments) {
+  /**
+   * Which marking each character came from.
+   *
+   * Two markings of the *same* rule on adjacent letters are two obligations, not one, and
+   * without this they were fused. «الٓمٓ» is marked `[m[لٓ][m[مٓ]` — a madd lāzim on the lām
+   * and another on the mīm, six ḥarakāt each — and because the two runs sit next to each
+   * other and carry the same code they were merged into a single stretch. The reciter saw
+   * one bar for a word that owes two holds, and the word was charged six ḥarakāt instead of
+   * twelve.
+   */
+  const origin: number[] = []
+  segments.forEach((seg, segIndex) => {
     for (const ch of seg.text) {
       chars.push(ch)
       rules.push(seg.rule)
+      origin.push(segIndex)
     }
-  }
+  })
   if (chars.length === 0) return segments
 
   // Word boundaries in the flattened text, so each word can be derived with its neighbours.
@@ -137,10 +149,16 @@ export function applyDerivedRuleSpans(segments: TajweedSegment[]): TajweedSegmen
   })
 
   const merged: TajweedSegment[] = []
+  let previousOrigin = -1
   for (let i = 0; i < chars.length; i++) {
     const previous = merged[merged.length - 1]
-    if (previous && previous.rule === rules[i]) previous.text += chars[i]
-    else merged.push(rules[i] ? { text: chars[i], rule: rules[i] } : { text: chars[i] })
+    // Same rule *and* the same marking: two markings that happen to touch stay apart.
+    if (previous && previous.rule === rules[i] && origin[i] === previousOrigin) {
+      previous.text += chars[i]
+    } else {
+      merged.push(rules[i] ? { text: chars[i], rule: rules[i] } : { text: chars[i] })
+    }
+    previousOrigin = origin[i]
   }
   return merged
 }
@@ -558,10 +576,10 @@ export function segmentsToWords(segments: TajweedSegment[]): WordWithRules[] {
         currentWord += part
         if (seg.rule) {
           currentRules.add(seg.rule)
-          // Segments split mid-rule, so extend the run rather than opening a second span.
-          const previous = currentSpans[currentSpans.length - 1]
-          if (previous && previous.rule === seg.rule && previous.end === start) previous.end = currentWord.length
-          else currentSpans.push({ rule: seg.rule, start, end: currentWord.length })
+          // One span per segment, even where two of the same rule touch: the muṣḥaf marking
+          // them separately is what says they are separate obligations. Merging them here
+          // undid the distinction applyDerivedRuleSpans is careful to keep.
+          currentSpans.push({ rule: seg.rule, start, end: currentWord.length })
         }
       }
     }

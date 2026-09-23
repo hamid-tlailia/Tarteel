@@ -1,5 +1,5 @@
 import type { TajweedRuleId } from '../types/quran'
-import type { WordRuleSpan, WordWithRules } from './tajweed'
+import type { WordWithRules } from './tajweed'
 import { maddHarakatAt, maddOptionalExtraAt, paceOf, type PaceId, type PaceProfile } from './recitationPace'
 
 /**
@@ -80,28 +80,35 @@ function heldHarakat(
   combine: 'shortest' | 'longest',
 ): number {
   const pick = combine === 'shortest' ? Math.min : Math.max
-  const contributing = w.rules.map((rule) => ({ rule, harakat: harakatOf(rule) })).filter((r) => r.harakat > 0)
-  if (contributing.length === 0) return 0
-  if (contributing.length === 1) return contributing[0].harakat
+  const byRule = w.rules.map((rule) => ({ rule, harakat: harakatOf(rule) })).filter((r) => r.harakat > 0)
+  if (byRule.length === 0) return 0
 
-  const spansOf = (rule: TajweedRuleId): WordRuleSpan[] => (w.spans ?? []).filter((s) => s.rule === rule)
-  if (!w.spans || contributing.some((r) => spansOf(r.rule).length === 0)) {
-    return pick(...contributing.map((r) => r.harakat))
+  // Counted per *marking*, not per rule. The same rule on two different letters is two
+  // obligations: «الٓمٓ» carries a madd lāzim on its lām and another on its mīm — twelve
+  // ḥarakāt in all — and counting the rule once charged the word six. Going through the rule
+  // list first also made a word with a single rule return early, never reaching the spans at
+  // all, which is how that word slipped through.
+  const marks = (w.spans ?? [])
+    .map((span) => ({ ...span, harakat: harakatOf(span.rule) }))
+    .filter((m) => m.harakat > 0)
+
+  // Without spans (hand-built words, fixtures) there is nothing to say whether the rules sit
+  // on one letter or several, so they are assumed to share one — the forgiving reading.
+  if (marks.length === 0 || byRule.some((r) => !marks.some((m) => m.rule === r.rule))) {
+    return byRule.length === 1 ? byRule[0].harakat : pick(...byRule.map((r) => r.harakat))
   }
 
-  // Cluster the rules by letters that touch, then resolve each cluster to a single hold.
+  // Cluster the markings by letters that touch, then resolve each cluster to a single hold.
   const groups: { start: number; end: number; harakat: number }[] = []
-  for (const { rule, harakat } of contributing) {
-    for (const span of spansOf(rule)) {
-      const overlapping = groups.filter((g) => span.start < g.end && g.start < span.end)
-      const merged = {
-        start: Math.min(span.start, ...overlapping.map((g) => g.start)),
-        end: Math.max(span.end, ...overlapping.map((g) => g.end)),
-        harakat: overlapping.length === 0 ? harakat : pick(harakat, ...overlapping.map((g) => g.harakat)),
-      }
-      for (const g of overlapping) groups.splice(groups.indexOf(g), 1)
-      groups.push(merged)
+  for (const mark of marks) {
+    const overlapping = groups.filter((g) => mark.start < g.end && g.start < mark.end)
+    const merged = {
+      start: Math.min(mark.start, ...overlapping.map((g) => g.start)),
+      end: Math.max(mark.end, ...overlapping.map((g) => g.end)),
+      harakat: overlapping.length === 0 ? mark.harakat : pick(mark.harakat, ...overlapping.map((g) => g.harakat)),
     }
+    for (const g of overlapping) groups.splice(groups.indexOf(g), 1)
+    groups.push(merged)
   }
   return groups.reduce((sum, g) => sum + g.harakat, 0)
 }

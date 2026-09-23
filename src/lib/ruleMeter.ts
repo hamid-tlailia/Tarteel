@@ -38,17 +38,17 @@ export interface RuleMeter {
 /** The held rulings of a word, in the order their letters appear. */
 export function heldRulesOf(word: WordWithRules, paceId?: PaceId): Omit<RuleMeter, 'heldMs' | 'state'>[] {
   const pace = paceOf(paceId)
-  const seen = new Set<TajweedRuleId>()
   const out: Omit<RuleMeter, 'heldMs' | 'state'>[] = []
 
+  // One bar per marking, not per rule. The same rule falling on two different letters is two
+  // obligations: «الٓمٓ» carries a madd lāzim on its lām and another on its mīm, six ḥarakāt
+  // each, and collapsing them to a single bar asked for half of what the word owes. Only
+  // held rules reach here at all, so the heavy letters — which really are one property
+  // however often they recur — never produce a bar to duplicate.
   for (const span of [...(word.spans ?? [])].sort((a, b) => a.start - b.start)) {
-    // A rule can be marked on more than one run of letters (the heavy letters especially).
-    // Only the first is a bar; a ruling is one obligation however it is written.
-    if (seen.has(span.rule)) continue
     const maddHarakat = maddHarakatAt(pace, span.rule)
     const isGhunnah = GHUNNA_RULES.has(span.rule)
     if (maddHarakat === 0 && !isGhunnah) continue
-    seen.add(span.rule)
     out.push({
       rule: span.rule,
       kind: maddHarakat > 0 ? 'madd' : 'ghunnah',
