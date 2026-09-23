@@ -46,6 +46,7 @@ import {
 } from '../lib/findings'
 import { DEFAULT_RIWAYA_ID, RIWAYAT, riwayaFullNameAr, riwayaOf, type RiwayaId } from '../lib/riwaya'
 import { LiveTajweedTracker, type LiveSnapshot } from '../lib/liveTracker'
+import { LivePassageRules, type LivePassageSnapshot } from '../lib/livePassageRules'
 import type { RuleMeter } from '../lib/ruleMeter'
 import { expectedDurationBreakdown } from '../lib/wordTiming'
 import { useWhisper } from '../asr/useWhisper'
@@ -58,6 +59,7 @@ const MIN_SPEECH_SAMPLES = 8000 // ~0.5s at 16kHz, after silence trimming
 // in liveTracker.ts. Not user-configurable yet; a reasonable middle ground for a first pass.
 const LIVE_TAU = 0.45
 const LIVE_CLOCK_INTERVAL_MS = 500
+const LIVE_RULE_INTERVAL_MS = 125
 
 /**
  * Somewhere to start.
@@ -490,6 +492,16 @@ export function PracticePage() {
   const [inputRms, setInputRms] = useState<number | null>(null)
   /** The ayah the reciter appears to have slipped into instead of the one selected. */
   const [drift, setDrift] = useState<PassageDrift | null>(null)
+  /**
+   * The passage's rulings, filling as their sounds are heard.
+   *
+   * No cursor is involved. The rulings have a fixed order in the text and the hold detector
+   * hears each sustained sound as it happens, so the holds are matched to the rulings in order
+   * — which is a claim about what was heard, not about where the reciter is. See
+   * livePassageRules.ts for why the cursor had to go and why this does not need one.
+   */
+  const [liveRules, setLiveRules] = useState<LivePassageSnapshot | null>(null)
+  const liveRulesRef = useRef<LivePassageRules | null>(null)
   /** Whether the hold detector actually received audio during the last recitation. Its
    * absence silences the per-ruling bars completely, so it is reported rather than guessed. */
   const [liveAudioSignal, setLiveAudioSignal] = useState<boolean | null>(null)
@@ -537,6 +549,7 @@ export function PracticePage() {
   const holdFillRefs = useRef<(HTMLSpanElement | null)[]>([])
   /** The tracker revision the last React render reflected, so renders happen on events. */
   const liveRevisionRef = useRef(-1)
+  const ruleIntervalRef = useRef<number | null>(null)
   /** The mic ring, likewise driven per frame rather than through a re-render. */
   const micRingRef = useRef<HTMLSpanElement | null>(null)
   const [micError, setMicError] = useState<string | null>(null)
@@ -805,6 +818,8 @@ export function PracticePage() {
     setLiveAudioSignal(null)
     setHypothesis(null)
     setLiveSnapshot(null)
+    setLiveRules(null)
+    liveRulesRef.current = null
     setPassageMatch(0)
     setDiagnostics([])
     setOrthographyVariant(null)
@@ -834,6 +849,10 @@ export function PracticePage() {
     if (snapshotIntervalRef.current !== null) {
       window.clearInterval(snapshotIntervalRef.current)
       snapshotIntervalRef.current = null
+    }
+    if (ruleIntervalRef.current !== null) {
+      window.clearInterval(ruleIntervalRef.current)
+      ruleIntervalRef.current = null
     }
     analyserRef.current = null
     latestRmsRef.current = 0
@@ -987,6 +1006,9 @@ export function PracticePage() {
         paceId,
       )
       liveTrackerRef.current = tracker
+      const passageRules = new LivePassageRules(referenceWords, paceId)
+      liveRulesRef.current = passageRules
+      setLiveRules(passageRules.snapshot())
       setLiveSnapshot(tracker.snapshot())
 
       const stream = recorder.getStream()
@@ -1027,6 +1049,9 @@ export function PracticePage() {
             // what fills a ruling's bar. Without them the hold detector hears nothing, every
             // ruling reads as unperformed, and the bars vanish entirely.
             tr.feed(rms, performance.now(), timeDomain, an.context.sampleRate)
+            // The same frame goes to the passage-wide hold matcher, which is what fills the
+            // bars under the words.
+            liveRulesRef.current?.feed(timeDomain, an.context.sampleRate, 1000 / 60)
 
             // One bar per ruling of the word being recited, each filling from the hold that
             // belongs to it — so the muttaṣil's bar stops where the muttaṣil stopped, and
@@ -1063,6 +1088,14 @@ export function PracticePage() {
             setMicLevel(Math.min(1, latestRmsRef.current * 12))
             setElapsedMs(performance.now() - startedAtRef.current)
           }, LIVE_CLOCK_INTERVAL_MS)
+
+          // The bars move continuously, so they get their own faster tick. Eight times a second
+          // is enough for a bar that takes a second to fill, and light enough not to starve the
+          // animation frames that feed the detector — which is what made the old meter lag.
+          ruleIntervalRef.current = window.setInterval(() => {
+            const live = liveRulesRef.current
+            if (live) setLiveRules(live.snapshot())
+          }, LIVE_RULE_INTERVAL_MS)
         } catch {
           // Live per-word timing is a nice-to-have; recording itself still works without it.
         }
@@ -1490,8 +1523,9 @@ export function PracticePage() {
                   />
                 </div>
                 <p className="mt-2 text-xs leading-relaxed text-faint">
-                  هذا تقدير زمني للمقطع كلّه، ولا يعرف أيّ كلمة تقرأ الآن: تحديد الكلمات والأحكام يحتاج تحليلًا لا
-                  يتم إلا بعد التسجيل، وهو ما يظهر لك حينها — بالكلمة وبالحكم وبصوتك مسجّلًا.
+                  الخطوط تحت الكلمات تمتلئ بما <span className="font-bold">تسمعه من صوتك ممسَكًا</span>، مرتَّبةً على
+                  ترتيب الأحكام في النص — فهي لا تدّعي معرفة أيّ كلمة تقرأ الآن، وإنما تتابع الأصوات كما تخرج.
+                  {liveRules && liveRules.total > 0 && ` أُتمَّ ${liveRules.completed} من ${liveRules.total} حكمًا.`}
                 </p>
               </div>
             )}
@@ -1565,12 +1599,23 @@ export function PracticePage() {
                 return (
                   <div key={r.ayahNumber} className="flex items-start gap-2">
                     <div className="flex-1">
-                      <div className="flex flex-wrap gap-x-1.5 gap-y-1 font-quran text-2xl text-muted" dir="rtl">
-                        {referenceWords.slice(r.start, r.end).map((w, i) => (
-                          <span key={`${r.ayahNumber}-${i}`} className="px-1.5 py-0.5">
-                            {w.word}
-                          </span>
-                        ))}
+                      <div className="flex flex-wrap gap-x-1.5 gap-y-2 font-quran text-2xl text-muted" dir="rtl">
+                        {referenceWords.slice(r.start, r.end).map((w, i) => {
+                          // One bar per ruling, filling as that ruling's sound is actually held.
+                          // Which word is being recited is never claimed — the holds are matched
+                          // to the passage's rulings in their reading order. See
+                          // livePassageRules.ts.
+                          const meters = liveRules?.metersByWord.get(r.start + i) ?? []
+                          return (
+                            <span
+                              key={`${r.ayahNumber}-${i}`}
+                              className={clsx('relative inline-block px-1.5 py-0.5', ruleBarsHeightClass(meters.length))}
+                            >
+                              {w.word}
+                              {meters.length > 0 && <RuleBars meters={meters} />}
+                            </span>
+                          )
+                        })}
                       </div>
                     </div>
                     <AyahBadge n={r.numberInSurah} />
