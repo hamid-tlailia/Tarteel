@@ -61,29 +61,29 @@ const GAP_MS = 150
  *
  * Silence was the only boundary this tracker knew, and tarteel has almost none: «بِسْمِ ٱللَّهِ
  * ٱلرَّحْمَـٰنِ ٱلرَّحِيمِ» is one unbroken stream of voice. So the cursor advanced only when the
- * reciter stopped to breathe, and otherwise waited for a budget of expected×2.4+900ms to run
- * out — 2316ms for «بِسْمِ», a word recited in about 325. Measured on a reciter quicker than
- * the selected pace, the display sat two whole words behind the voice.
+ * reciter stopped to breathe, and otherwise waited out a fixed budget — 2316ms for «بِسْمِ», a
+ * word recited in about 325 — leaving the display two words behind the voice.
  *
- * A juncture between joined words does not fall to silence, but it does fall: the energy
- * dips against the word's own recent loudness as one word closes and the next opens. That
- * relative dip is the boundary, and unlike a duration budget it cannot drift with the
- * reciter's speed.
+ * The energy does dip at a juncture, and a first attempt closed a word at any such dip. That
+ * failed in both directions, because a dip is not a reliable sign on its own. Arabic dips
+ * inside a word at every closed syllable — the sukūn of «بِسْمِ» is a dip in the middle of the
+ * word — so taken alone it split words early and the cursor raced ahead of the reciter. Yet
+ * on other voices the dips are shallow enough to be smoothed away by the analysis window and
+ * none fires at all.
+ *
+ * So neither signal decides alone. The word's own expected duration, scaled by the pace the
+ * reciter has been keeping, opens a window; a dip inside that window picks the exact moment;
+ * and the window's far edge closes the word regardless. A dip before the window cannot end a
+ * word that has not yet had its due, and a voice with no dips at all is still followed.
  */
-const DIP_RATIO = 0.45
-const DIP_MS = 40
-/** A dip cannot end a word that has barely started — that is a syllable, not a boundary. */
-const MIN_WORD_FOR_DIP_MS = 160
+const DIP_RATIO = 0.55
+const DIP_MS = 30
+/** No dip may end a word before it has had this share of what it is due. */
+const WINDOW_EARLIEST = 0.7
+/** Past this multiple of its due, the word ends whether or not the voice ever dipped. */
+const WINDOW_LATEST = 1.4
 /** Safety cap: force-close a word that's been open far longer than any madd could justify. */
-/**
- * The last-resort budget, now that dips carry the segmentation.
- *
- * It exists only for a reciter whose voice never dips — a single sustained sound across
- * several words — and it is measured against the pace the *other* words established rather
- * than against a fixed multiple, so it cannot be systematically wrong for a fast or slow
- * reciter the way expected×2.4+900ms was.
- */
-const BUDGET_OVERRUN = 2.2
+
 const START_THR = 0.012
 /**
  * The longest gap between two energy frames still counted as elapsed recitation.
@@ -253,29 +253,24 @@ export class LiveTajweedTracker {
         }
       }
 
-      // Track how loud this word has been, so a dip can be judged against it rather than
-      // against an absolute level that varies with microphone and voice.
+      // Track how loud this word has been, so a dip is judged against it rather than against
+      // an absolute level that varies with microphone and voice.
       this.wordPeak = Math.max(rms, this.wordPeak * 0.997)
+      if (rms < this.wordPeak * DIP_RATIO) this.dipMs += dt
+      else this.dipMs = 0
 
-      if (rms < this.wordPeak * DIP_RATIO) {
-        this.dipMs += dt
-        if (this.dipMs >= DIP_MS && this.voicedMs >= MIN_WORD_FOR_DIP_MS) {
-          this.closeCurrent('boundary')
-          return
-        }
-      } else {
-        this.dipMs = 0
+      const due = (this.expectedMs[this.cursor] ?? 0) * this.scale
+      if (due > 0) {
+        if (this.voicedMs >= due * WINDOW_LATEST) this.closeCurrent('window')
+        else if (this.voicedMs >= due * WINDOW_EARLIEST && this.dipMs >= DIP_MS) this.closeCurrent('heard')
       }
-
-      const exp = this.expectedMs[this.cursor]
-      if (exp > 0 && this.voicedMs > exp * this.scale * BUDGET_OVERRUN) this.closeCurrent('budget')
     } else if (this.inWord) {
       this.silenceMs += dt
-      if (this.silenceMs >= GAP_MS) this.closeCurrent('boundary')
+      if (this.silenceMs >= GAP_MS) this.closeCurrent('heard')
     }
   }
 
-  private closeCurrent(reason: 'boundary' | 'budget' = 'boundary'): void {
+  private closeCurrent(reason: 'heard' | 'window' = 'heard'): void {
     const i = this.cursor
     if (i < 0 || i >= this.words.length) {
       this.inWord = false
@@ -292,11 +287,12 @@ export class LiveTajweedTracker {
     // Read the holds before the tracker is reset for the next word.
     const meters = this.metersFor(i, true)
     const scaleBefore = this.scale
-    // Only a real boundary — a dip or a pause — tells us how long this reciter takes over a
-    // word. A word closed because its budget ran out lasted exactly as long as the budget,
-    // so feeding that back would drag the pace toward the budget and then lengthen the next
-    // budget in turn: the estimate would chase itself instead of the voice.
-    if (reason === 'boundary' && measured >= MIN_VOICED_MS && this.expectedMs[i] > 0) {
+    // Only a boundary actually *heard* — a dip or a pause — says how long this reciter takes
+    // over a word. A word closed because the window ran out lasted exactly as long as the
+    // window allowed, so feeding that back would widen the window for the next word, and the
+    // next, until the estimate was chasing itself rather than the voice. Left out, a voice
+    // whose dips are too shallow to detect still keeps a bounded error instead of drifting.
+    if (reason === 'heard' && measured >= MIN_VOICED_MS && this.expectedMs[i] > 0) {
       this.ratios.push(measured / this.expectedMs[i])
       if (this.ratios.length >= 2) this.scale = Math.min(1.8, Math.max(0.6, median(this.ratios)))
     }
@@ -379,7 +375,7 @@ export class LiveTajweedTracker {
   /** Call when recording stops: closes any still-open word and freezes the tracker. */
   finish(): void {
     if (this.finished) return
-    if (this.inWord) this.closeCurrent()
+    if (this.inWord) this.closeCurrent('heard')
     this.finished = true
     this.rev++
   }
