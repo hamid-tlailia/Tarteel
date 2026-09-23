@@ -78,6 +78,21 @@ function heldHarakat(
   w: WordWithRules,
   harakatOf: (rule: TajweedRuleId) => number,
   combine: 'shortest' | 'longest',
+  /**
+   * Ḥarakāt of each held letter that the word's ordinary syllables already account for.
+   *
+   * One, for a madd. A madd letter *is* the vowel of its syllable, lengthened: «قَالَ» is two
+   * syllables of which the first is held for two ḥarakāt, not two syllables plus two more. The
+   * model charged both, so every madd word was predicted one ḥaraka too long, and a reciter who
+   * performed it correctly came in short.
+   *
+   * The evidence is direct. Fitting this model to word timings from nine published Ḥafṣ
+   * recitations (~6,400 words) gives the ḥarakāt each ruling actually adds above the syllable
+   * baseline: madd ṭabīʿī 1.0 against the two the books name, wājib muttaṣil 3.0 against four,
+   * ʿāriḍ 2.0 — each of them exactly one ḥaraka less than asked. Deducting that shared beat is
+   * not a tolerance, it is the overlap the model was missing.
+   */
+  overlapPerLetter = 0,
 ): number {
   const pick = combine === 'shortest' ? Math.min : Math.max
   const byRule = w.rules.map((rule) => ({ rule, harakat: harakatOf(rule) })).filter((r) => r.harakat > 0)
@@ -94,8 +109,9 @@ function heldHarakat(
 
   // Without spans (hand-built words, fixtures) there is nothing to say whether the rules sit
   // on one letter or several, so they are assumed to share one — the forgiving reading.
+  const deduct = (harakat: number) => Math.max(0, harakat - overlapPerLetter)
   if (marks.length === 0 || byRule.some((r) => !marks.some((m) => m.rule === r.rule))) {
-    return byRule.length === 1 ? byRule[0].harakat : pick(...byRule.map((r) => r.harakat))
+    return deduct(byRule.length === 1 ? byRule[0].harakat : pick(...byRule.map((r) => r.harakat)))
   }
 
   // Cluster the markings by letters that touch, then resolve each cluster to a single hold.
@@ -110,7 +126,42 @@ function heldHarakat(
     for (const g of overlapping) groups.splice(groups.indexOf(g), 1)
     groups.push(merged)
   }
-  return groups.reduce((sum, g) => sum + g.harakat, 0)
+  return groups.reduce((sum, g) => sum + deduct(g.harakat), 0)
+}
+
+/** The ḥaraka a held letter shares with the syllable it belongs to — see heldHarakat. */
+const MADD_SYLLABLE_OVERLAP = 1
+
+/**
+ * The parts of a word's duration that do not depend on the pace: its fixed overhead and how
+ * many ordinary syllable beats it has.
+ *
+ * Exported so real recitations can be measured against the same model the app judges by. The
+ * alternative was a measuring script with its own copy of `WORD_FIXED_MS` and its own syllable
+ * counter, which would calibrate constants for a model no reciter runs.
+ */
+export function wordShape(w: WordWithRules): { fixedMs: number; syllables: number } {
+  return { fixedMs: WORD_FIXED_MS, syllables: countSyllables(w.word) }
+}
+
+/**
+ * How many ḥarakāt of *held* sound a measured duration implies, given how long one ḥaraka
+ * lasts for this reciter.
+ *
+ * The inverse of the model in expectedDurationBreakdown: a word takes a fixed overhead, plus
+ * one ḥaraka per ordinary syllable, plus however many ḥarakāt its rules are held for. Run
+ * over accredited recitations whose word timings are published, it answers the question the
+ * constants in recitationPace.ts can only assert: how long *is* a madd lāzim, in practice,
+ * for a reciter reading at this speed.
+ *
+ * Returns null when the reciter's ḥaraka is unknown or the word is shorter than its own
+ * syllables — a measurement that cannot be interpreted rather than one worth reporting.
+ */
+export function impliedHeldHarakat(w: WordWithRules, measuredMs: number, harakaMs: number): number | null {
+  if (!(harakaMs > 0) || !(measuredMs > 0)) return null
+  const { fixedMs, syllables } = wordShape(w)
+  const held = (measuredMs - fixedMs) / harakaMs - syllables
+  return held >= -syllables ? held : null
 }
 
 export interface FastestPlausible {
@@ -131,6 +182,7 @@ export function fastestPlausibleDuration(
     w,
     (rule) => (kind === 'madd' ? maddHarakatAt(pace, rule) : GHUNNA_RULES.has(rule) ? GHUNNA_HARAKAT : 0),
     'shortest',
+    kind === 'madd' ? MADD_SYLLABLE_OVERLAP : 0,
   )
   return {
     baseMs: WORD_FIXED_MS + countSyllables(w.word) * FASTEST_SYLLABLE_MS,
@@ -159,7 +211,7 @@ export function expectedDurationBreakdown(w: WordWithRules, paceId?: PaceId): Ex
   const pace = paceOf(paceId)
   const harakaMs = pace.harakaMs
   const base = WORD_FIXED_MS + harakaMs * countSyllables(w.word)
-  const maddMs = heldHarakat(w, (rule) => maddHarakatAt(pace, rule), 'shortest') * harakaMs
+  const maddMs = heldHarakat(w, (rule) => maddHarakatAt(pace, rule), 'shortest', MADD_SYLLABLE_OVERLAP) * harakaMs
   const ghunnaMs = heldHarakat(w, (rule) => (GHUNNA_RULES.has(rule) ? GHUNNA_HARAKAT : 0), 'shortest') * harakaMs
   // The optional stretch belongs to the same letter as the madd it extends, so it is chosen
   // the same way: the most any one of the word's madds permits beyond its minimum.

@@ -70,6 +70,13 @@ export function stripTajweedMarkup(raw: string): string {
 const REFINES: Partial<Record<TajweedRuleId, TajweedRuleId>> = {
   madda_arid: 'madda_permissible',
   madda_leen: 'madda_permissible',
+  // The two ṣilah madds *are* the madd the edition marks on the pronoun's small wāw or yāʾ,
+  // named more precisely — not a second hold beside it. Letting both stand charged «بِهِۦ» two
+  // ḥarakāt for the ṣilah and two more for the marked madd, and word timings from nine
+  // published recitations caught it at once: «بِهِۦ», «رَبِّهِۦ» and «فَجَعَلَهُۥ» were reported
+  // short for every single reciter, because no reciter holds a two-ḥaraka madd for four.
+  madda_sila_sughra: 'madda_normal',
+  madda_sila_kubra: 'madda_normal',
 }
 
 /**
@@ -126,23 +133,42 @@ export function applyDerivedRuleSpans(segments: TajweedSegment[]): TajweedSegmen
       words[i - 1]?.text ?? '',
       i === words.length - 1,
     )
+    const wordEnd = w.start + w.text.length
     for (const span of spans) {
       const refined = REFINES[span.rule]
+      /** Rewrites the whole run of the rule being refined that `at` sits in. */
+      const absorbRun = (at: number) => {
+        let from = at
+        while (from > w.start && rules[from - 1] === refined) from--
+        let to = at
+        while (to + 1 < wordEnd && rules[to + 1] === refined) to++
+        for (let m = from; m <= to; m++) {
+          rules[m] = span.rule
+          // One marking, not two: the absorbed run joins the derived span's own marking, so
+          // the meter shows a single bar and charges a single hold.
+          origin[m] = -(i + 1)
+        }
+      }
+      // The derived letter and the edition's marking need not sit on the same character. The
+      // ṣilah is derived on the hāʾ while the edition marks the small wāw or yāʾ that follows
+      // it, so a refinement that only looked at its own characters left both in place.
+      if (refined !== undefined) {
+        for (const probe of [w.start + span.end, w.start + span.start - 1]) {
+          if (probe >= w.start && probe < wordEnd && rules[probe] === refined) absorbRun(probe)
+        }
+      }
       for (let k = span.start; k < span.end; k++) {
         const at = w.start + k
         if (at >= rules.length) continue
         const marked = rules[at]
         if (marked === undefined) {
           rules[at] = span.rule
+          origin[at] = -(i + 1)
         } else if (refined !== undefined && marked === refined) {
           // Take over the whole run the edition marked, not just the madd letter itself —
           // the kasra or damma that carries it belongs to the same colouring, and splitting
           // it would paint «ـِي» in two hues for one ruling.
-          let from = at
-          while (from > w.start && rules[from - 1] === refined) from--
-          let to = at
-          while (to + 1 < rules.length && rules[to + 1] === refined) to++
-          for (let m = from; m <= to; m++) rules[m] = span.rule
+          absorbRun(at)
         }
       }
     }

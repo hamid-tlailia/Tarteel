@@ -65,6 +65,10 @@ const HOLD_ABSENT_BELOW = 0.2
  * before calling a duration physically impossible. */
 const TIMING_TOLERANCE_MS = 60
 
+/** The smallest obligation, in ḥarakāt above the syllable baseline, that a whole word's duration
+ * can actually resolve. See the note where it is used. */
+const MIN_DECISIVE_HARAKAT = 2
+
 function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value))
 }
@@ -243,6 +247,41 @@ function auditWord(
     return checks
   }
 
+  // An obligation smaller than the noise in a word boundary cannot be judged by the word's
+  // duration, and pretending otherwise is where most of the false alarms came from.
+  //
+  // Measured, again on ~6,400 words of nine published Ḥafṣ recitations: the two-ḥaraka madds —
+  // ṭabīʿī, ʿiwaḍ, badal, ṣilah ṣughrā — add a median of one ḥaraka above the syllable baseline
+  // and a *tenth percentile of about zero*. Half of all correct performances therefore sit below
+  // any threshold strict enough to catch a dropped one; «مِهَـٰدًا» and «شِدَادًا» were reported
+  // short for reciter after reciter. A madd ṭabīʿī is roughly one extra vowel beat, 200–400ms,
+  // which is the same order as the error in knowing where a word begins and ends.
+  //
+  // So duration judges only what it can resolve: obligations of two ḥarakāt or more above the
+  // baseline, which is the muttaṣil, the munfaṣil, the lāzim and an ʿāriḍ someone chose to
+  // stretch. Everything shorter is reported as unverified, which is what it is.
+  const pace = paceOf(paceId)
+  const theory = expectedDurationBreakdown(refWord, paceId)
+  const obligationHarakat = (theory.total - theory.withoutMadd) / pace.harakaMs
+  if (judgedKind === 'madd' && obligationHarakat < MIN_DECISIVE_HARAKAT) {
+    checks.push(undecided(judgedRules, 'duration-not-decisive')!)
+    return checks
+  }
+
+  /**
+   * With several obligations sharing one measurement, only a gross deficit can be reported.
+   *
+   * «كِتَـٰبًا» stopped on carries a madd on its alif and a madd ʿiwaḍ on its tanwīn: two holds,
+   * one duration. A word a little shorter than the sum of them says nothing about either — and
+   * that is where most of the remaining false alarms sat, «مِهَـٰدًا», «أَزْوَٲجًا», «جَزَآءً»
+   * reported short for reciter after reciter.
+   *
+   * So a shared measurement may still say "one or both of these holds is missing" — a deficit
+   * that large is not attributable but it is real, and it is what «الٓمٓ» read flat looks like —
+   * while a marginal shortfall is left undecided, because nothing here can say which ruling it
+   * belongs to or whether it exists at all.
+   */
+  const shared = judgedRules.length > 1
   const floorsOnly = tempoScale === null
   const byTheory = judgeHold(refWord, judgedKind, measuredMs, tempoScale ?? 1, paceId, null, floorsOnly)
   // An accredited reciter's own performance of this ruling is evidence, but it is one
@@ -277,9 +316,31 @@ function auditWord(
     return checks
   }
 
+  // A ghunnah's *length* is not evidence enough to convict.
+  //
+  // This file has always said the nasality check is the only thing that can settle a ghunnah on
+  // a short word (see the note at the top of nasality.ts); the measurements now say how weak
+  // the clock is. Across ~6,400 words of nine published Ḥafṣ recitations, the time a ghunnah
+  // adds above the syllable baseline has a median near 1.4 ḥarakāt against the two the books
+  // ask, and a tenth percentile near zero — a correct ghunnah routinely looks, to a clock, like
+  // no ghunnah at all. Faulting on that produced false alarms on «عَمَّ» and «ٱلنَّبَإِ» for
+  // reciter after reciter. So the duration check now declines, and nasality decides: it either
+  // reports the fault itself or leaves the ruling undecided, which is the honest outcome when
+  // the only usable signal is missing.
+  if (judgedKind === 'ghunnah') {
+    checks.push(undecided(judgedRules, 'duration-not-decisive')!)
+    return checks
+  }
+
   const severity = byTheory && byReference && (byTheory.severity === 'mild' || byReference.severity === 'mild')
     ? 'mild'
     : judged.severity
+
+  // A shortfall too small to be a missing hold, on a word whose rulings share one measurement.
+  if (shared && severity === 'mild') {
+    checks.push(undecided(judgedRules, 'not-isolated')!)
+    return checks
+  }
   checks.push({
     refIndex,
     rules: judgedRules,

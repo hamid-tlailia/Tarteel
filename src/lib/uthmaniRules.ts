@@ -247,8 +247,17 @@ function maddBadal(letters: Letter[]): RuleHit | null {
  * The two ṣilah madds. The muṣḥaf marks a joined pronoun hāʾ with a small wāw or yāʾ, so
  * this is read from the script rather than inferred: greater ṣilah when a cutting hamza
  * begins the next word, lesser otherwise.
+ *
+ * And only when *joining*. The ṣilah is the little wāw or yāʾ the hāʾ is connected through to
+ * the next word; a reciter who stops on the word stops on a sākin hāʾ and there is no ṣilah at
+ * all. Deriving it anyway charged two ḥarakāt to a word ending an ayah, which is where this
+ * pronoun most often sits — «قُلْ هُوَ ٱللَّهُ أَحَدٌ … كُفُوًا أَحَدٌ» aside, «لَّهُۥ» ends 112:4 — and
+ * measuring nine published recitations showed the consequence exactly: the implied hold came
+ * back at *minus* 0.6 ḥarakāt, i.e. every reciter stopped where this engine demanded a madd,
+ * and every one of them was reported as having dropped it.
  */
-function maddSilah(letters: Letter[], nextWord: string): RuleHit | null {
+function maddSilah(letters: Letter[], nextWord: string, stopsHere: boolean): RuleHit | null {
+  if (stopsHere) return null
   const at = letters.findIndex((l) => l.ch === 'ه' && l.silahMark)
   if (at < 0) return null
   const next = nextWord ? firstLetterOf(nextWord) : undefined
@@ -438,7 +447,7 @@ function deriveRuleHits(word: string, nextWord: string, prevWord: string, stopsH
     izharHalqi(letters, nextWord),
     izharShafawi(letters, nextWord),
     maddBadal(letters),
-    maddSilah(letters, nextWord),
+    maddSilah(letters, nextWord, stopsHere),
     maddLeen(letters, stopsHere),
     maddArid(letters, stopsHere),
     maddIwad(letters, stopsHere),

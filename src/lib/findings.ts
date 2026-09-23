@@ -62,6 +62,9 @@ export type UndecidedReason =
   | 'passage-mismatch'
   /** The reciter's own comparison words were missing, so a relative measure had no baseline. */
   | 'no-baseline'
+  /** Duration is too weak a signal for this ruling to be judged by it — measured, not assumed:
+   * see the note in acousticTajweed.ts. Another check decides, or nobody does. */
+  | 'duration-not-decisive'
 
 export const UNDECIDED_REASON_AR: Record<UndecidedReason, string> = {
   'not-measurable': 'لا يوجد في هذه النسخة قياس صوتي لهذا النوع من الأحكام',
@@ -73,6 +76,7 @@ export const UNDECIDED_REASON_AR: Record<UndecidedReason, string> = {
   'weak-signal': 'الإشارة الصوتية أضعف أو أقصر من أن تُبنى عليها نتيجة',
   'passage-mismatch': 'لم نتعرّف على المقطع في التسجيل',
   'no-baseline': 'لم تتوفّر في تسجيلك كلمات مقارنة تكفي لهذا القياس',
+  'duration-not-decisive': 'زمن الكلمة لا يكفي للحكم على هذا النوع، والحكم فيه على رنين الخيشوم',
 }
 
 /**

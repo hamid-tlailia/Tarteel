@@ -58,6 +58,9 @@ export const PACES: PaceProfile[] = [
       madda_obligatory: 4,
       madda_permissible: 4,
       madda_sila_kubra: 4,
+      // The ʿāriḍ and the līn permit two, four or six ḥarakāt at *any* pace, and a reciter
+      // taking the shortest has done nothing wrong. So two is what is owed everywhere, and the
+      // rest is offered rather than required — see the note on maddOptionalExtraAt.
       madda_arid: 2,
       madda_leen: 2,
     },
@@ -73,8 +76,8 @@ export const PACES: PaceProfile[] = [
       madda_obligatory: 4,
       madda_permissible: 4,
       madda_sila_kubra: 4,
-      madda_arid: 4,
-      madda_leen: 4,
+      madda_arid: 2,
+      madda_leen: 2,
     },
   },
   {
@@ -88,8 +91,8 @@ export const PACES: PaceProfile[] = [
       madda_obligatory: 5,
       madda_permissible: 5,
       madda_sila_kubra: 5,
-      madda_arid: 6,
-      madda_leen: 6,
+      madda_arid: 2,
+      madda_leen: 2,
     },
   },
 ]
@@ -110,10 +113,16 @@ export function maddHarakatAt(pace: PaceProfile, rule: TajweedRuleId): number {
 /**
  * Whether a madd at this pace may be stretched further, and by how many ḥarakāt.
  *
- * Only where the reciter genuinely has a choice. The ʿāriḍ and the līn permit two, four or
- * six whatever the pace, so what is *owed* is the pace's own reading and anything up to six
- * remains on offer — which is what the meter shows past its finish line. At taḥqīq, where
- * six is already owed, nothing is left over.
+ * Only where the reciter genuinely has a choice. The ʿāriḍ and the līn permit two, four or six
+ * ḥarakāt whatever the pace, so two is owed and everything up to six is on offer — which is
+ * what the meter shows past its finish line.
+ *
+ * These used to be owed the pace's own reading: four ḥarakāt in tadwīr, six in taḥqīq. Word
+ * timings from nine published Ḥafṣ recitations say otherwise — the ʿāriḍ measured a median of
+ * 2.0 ḥarakāt across them, with p90 at 5.8: accredited reciters mostly take the shortest
+ * reading, in every pace, and the wide spread is the choice itself rather than error. Demanding
+ * the pace's reading therefore manufactured a fault out of a sound ḥafṣ waqf, and «سَيَعْلَمُونَ»
+ * at the end of an ayah was reported short for every one of those nine reciters.
  */
 export function maddOptionalExtraAt(pace: PaceProfile, rule: TajweedRuleId): number {
   if (rule !== 'madda_arid' && rule !== 'madda_leen') return 0
