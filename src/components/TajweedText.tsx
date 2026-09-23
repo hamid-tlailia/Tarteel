@@ -8,11 +8,19 @@ interface TajweedTextProps {
   colored?: boolean
   className?: string
   interactive?: boolean
+  /**
+   * When set, only this ruling's letters keep their colour and the rest of the ayah is dimmed.
+   *
+   * A lesson on the ikhfāʾ that shows an ayah coloured by eight different rulings has not shown
+   * the learner where the ikhfāʾ is; it has shown them a rainbow and left the finding to them.
+   * Dimming everything else answers «أين الحرف المقصود؟» without a word of explanation.
+   */
+  focusRule?: TajweedSegment['rule']
 }
 
 const HIDDEN_STYLE: CSSProperties = { position: 'fixed', top: -9999, left: -9999 }
 
-export function TajweedText({ segments, colored = true, className, interactive = true }: TajweedTextProps) {
+export function TajweedText({ segments, colored = true, className, interactive = true, focusRule }: TajweedTextProps) {
   const [active, setActive] = useState<number | null>(null)
   const triggerRefs = useRef<Record<number, HTMLSpanElement | null>>({})
   const tooltipRef = useRef<HTMLDivElement | null>(null)
@@ -78,6 +86,13 @@ export function TajweedText({ segments, colored = true, className, interactive =
     <span className={className} dir="rtl">
       {segments.map((seg, i) => {
         const rule = colored ? seg.rule && TAJWEED_RULE_MAP[seg.rule] : undefined
+        if (focusRule && seg.rule !== focusRule) {
+          return (
+            <span key={i} className="opacity-45">
+              {seg.text}
+            </span>
+          )
+        }
         if (!rule) return <span key={i}>{seg.text}</span>
         return (
           <span key={i} className="relative">

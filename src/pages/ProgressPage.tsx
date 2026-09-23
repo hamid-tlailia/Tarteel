@@ -2,7 +2,8 @@ import { useMemo } from 'react'
 import { CartesianGrid, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts'
 import { useProgressStore } from '../store/progressStore'
 import { useThemeStore } from '../store/themeStore'
-import { TAJWEED_RULES } from '../lib/tajweed'
+import { TAJWEED_RULES, TAJWEED_RULE_MAP } from '../lib/tajweed'
+import type { TajweedRuleId } from '../types/quran'
 import { Link } from 'react-router-dom'
 import clsx from 'clsx'
 
@@ -38,6 +39,38 @@ export function ProgressPage() {
     ? Math.round(attempts.reduce((sum, a) => sum + a.accuracy, 0) / attempts.length)
     : 0
 
+  /**
+   * Tajweed progress, kept apart from the words on purpose.
+   *
+   * These are two different claims resting on two different kinds of evidence: that a word was
+   * said as written, and that a ruling inside it was performed. Averaging them into one line
+   * would produce a number that means neither. So the rulings are counted — verified, faulted,
+   * beyond what the app could check — and the ones that came back faulted are listed by name,
+   * because "go back to the ikhfāʾ" is advice a learner can act on and a percentage is not.
+   */
+  const rulings = useMemo(() => {
+    const met = new Map<TajweedRuleId, number>()
+    const faulted = new Map<TajweedRuleId, number>()
+    let totals = { met: 0, faulted: 0, undecided: 0 }
+    let measured = 0
+    for (const attempt of attempts) {
+      if (!attempt.rulings) continue
+      measured++
+      totals = {
+        met: totals.met + attempt.rulings.met,
+        faulted: totals.faulted + attempt.rulings.faulted,
+        undecided: totals.undecided + attempt.rulings.undecided,
+      }
+      for (const rule of attempt.metRules ?? []) met.set(rule, (met.get(rule) ?? 0) + 1)
+      for (const rule of attempt.faultedRules ?? []) faulted.set(rule, (faulted.get(rule) ?? 0) + 1)
+    }
+    const needsReview = [...faulted.entries()].sort((a, b) => b[1] - a[1])
+    const verified = [...met.entries()].filter(([rule]) => !faulted.has(rule)).sort((a, b) => b[1] - a[1])
+    const seen = new Set([...met.keys(), ...faulted.keys()])
+    const untouched = TAJWEED_RULES.filter((r) => !seen.has(r.id))
+    return { totals, measured, needsReview, verified, untouched }
+  }, [attempts])
+
   return (
     <div className="space-y-9">
       <div>
@@ -50,6 +83,81 @@ export function ProgressPage() {
         <StatCard label="متوسط دقة الكلمات" value={`${avgAccuracy}%`} />
         <StatCard label="أيام متتالية" value={streak} />
       </div>
+
+      {/* What was practised, and what to go back to — rulings, not a percentage. */}
+      <section className="card-lux space-y-4 p-6">
+        <div>
+          <h2 className="title-ornament font-display text-xl font-bold text-accent">أحكام التجويد في تلاواتك</h2>
+          <p className="mt-2 text-xs leading-relaxed text-faint">
+            هذه أعداد أحكام، لا نسبة. لا تُجمع مع دقّة الكلمات لأنّهما دعويان مختلفتان: أن الكلمة قُرئت كما في
+            المصحف شيء، وأنّ حكمها أُدّي شيء آخر.
+          </p>
+        </div>
+
+        {rulings.measured === 0 ? (
+          <p className="rounded-xl border border-line-soft bg-bg/40 px-4 py-3 text-sm text-faint">
+            لم تُسجَّل بعد تلاوة يحمل تحليلها أحكامًا. سجّل تلاوة في صفحة «التلاوة» وسيظهر هنا ما تحقّقنا منه وما
+            يحتاج مراجعة.
+          </p>
+        ) : (
+          <>
+            <div className="grid grid-cols-3 gap-2 text-center">
+              <div className="rounded-lg border border-ok/40 bg-ok/10 px-2 py-2.5">
+                <div className="font-display text-xl font-bold text-ok">{rulings.totals.met}</div>
+                <div className="mt-0.5 text-[11px] font-bold leading-tight text-ok">تحقّقنا من أدائه</div>
+              </div>
+              <div className="rounded-lg border border-warn/40 bg-warn-soft px-2 py-2.5">
+                <div className="font-display text-xl font-bold text-warn">{rulings.totals.faulted}</div>
+                <div className="mt-0.5 text-[11px] font-bold leading-tight text-warn">ظهر فيه خلل</div>
+              </div>
+              <div className="rounded-lg border border-line-soft bg-line-soft/40 px-2 py-2.5">
+                <div className="font-display text-xl font-bold text-muted">{rulings.totals.undecided}</div>
+                <div className="mt-0.5 text-[11px] font-bold leading-tight text-muted">غير محسوم</div>
+              </div>
+            </div>
+
+            {rulings.needsReview.length > 0 && (
+              <div>
+                <h3 className="mb-2 text-sm font-bold text-warn">يحتاج مراجعة</h3>
+                <div className="flex flex-wrap gap-2">
+                  {rulings.needsReview.map(([rule, count]) => (
+                    <Link
+                      key={rule}
+                      to={`/lessons/${rule}`}
+                      className="rounded-xl border border-warn/40 bg-warn-soft px-3 py-1.5 text-xs font-bold text-warn transition hover:border-warn"
+                    >
+                      {TAJWEED_RULE_MAP[rule]?.nameAr ?? rule} · {count}
+                    </Link>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {rulings.verified.length > 0 && (
+              <div>
+                <h3 className="mb-2 text-sm font-bold text-ok">تحقّقنا من أدائك فيه</h3>
+                <div className="flex flex-wrap gap-2">
+                  {rulings.verified.map(([rule, count]) => (
+                    <span key={rule} className="rounded-xl border border-ok/40 bg-ok/10 px-3 py-1.5 text-xs font-bold text-ok">
+                      {TAJWEED_RULE_MAP[rule]?.nameAr ?? rule} · {count}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {rulings.untouched.length > 0 && (
+              <div>
+                <h3 className="mb-2 text-sm font-bold text-muted">لم تمرّ بها بعد</h3>
+                <p className="text-xs leading-relaxed text-faint">
+                  {rulings.untouched.length} حكمًا لم يظهر في ما تلوتَه حتى الآن — ليست خطأً ولا نجاحًا، وإنما لم
+                  تُختبر. اختر مقطعًا يحتويها من صفحة التلاوة.
+                </p>
+              </div>
+            )}
+          </>
+        )}
+      </section>
 
       <section className="card-lux p-6">
         <h2 className="title-ornament mb-5 font-display text-xl font-bold text-accent">تطوّر دقة الكلمات</h2>

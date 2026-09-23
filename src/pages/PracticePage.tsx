@@ -947,7 +947,7 @@ export function PracticePage() {
       vibrate([80, 60, 80])
     }
 
-    return analysis.verdicts
+    return { verdicts: analysis.verdicts, report: analysis.report }
   }
 
   const startRecording = async () => {
@@ -1103,7 +1103,14 @@ export function PracticePage() {
         orthographyVariant,
       } = await whisper.transcribe(trimmed, referenceWords.map((w) => w.word))
       setOrthographyVariant(orthographyVariant)
-      const verdicts = applyResult(text, resultChunks, confidences, timings, trimmed, conditioned.inputRms)
+      const { verdicts, report: attemptReport } = applyResult(
+        text,
+        resultChunks,
+        confidences,
+        timings,
+        trimmed,
+        conditioned.inputRms,
+      )
       if (meta) {
         const reached = verdicts.filter((v) => v.status !== 'unreached')
         const correct = reached.filter((v) => v.status === 'correct').length
@@ -1118,6 +1125,15 @@ export function PracticePage() {
           accuracy,
           correct,
           total: reached.length,
+          // The rulings travel with the attempt, so progress can show them apart from the
+          // words rather than folding two different claims into one line on a chart.
+          rulings: {
+            met: attemptReport.met.length,
+            faulted: attemptReport.faulted.length,
+            undecided: attemptReport.undecided.length,
+          },
+          faultedRules: [...new Set(attemptReport.faulted.map((f) => f.rule))],
+          metRules: [...new Set(attemptReport.met.map((f) => f.rule))],
         })
       }
     } catch (err) {
