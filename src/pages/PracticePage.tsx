@@ -7,7 +7,7 @@ import { PracticeIcon } from '../components/NavIcons'
 import { RuleBars, ruleBarsHeightClass } from '../components/RuleBars'
 import { Dropdown } from '../components/Dropdown'
 import { StopIcon } from '../components/RecorderIcons'
-import { primaryRule, segmentsToWords, TAJWEED_RULE_MAP, type WordWithRules } from '../lib/tajweed'
+import { segmentsToWords, TAJWEED_RULE_MAP, type WordWithRules } from '../lib/tajweed'
 import { normalizeArabic } from '../lib/arabicText'
 import type { AlignedWord } from '../lib/alignment'
 import type { AcousticAlert } from '../lib/acousticTajweed'
@@ -45,7 +45,7 @@ import {
   type TajweedReport,
 } from '../lib/findings'
 import { DEFAULT_RIWAYA_ID, RIWAYAT, riwayaFullNameAr, riwayaOf, type RiwayaId } from '../lib/riwaya'
-import { LiveTajweedTracker, type LiveSnapshot, type LiveWordResult } from '../lib/liveTracker'
+import { LiveTajweedTracker, type LiveSnapshot } from '../lib/liveTracker'
 import type { RuleMeter } from '../lib/ruleMeter'
 import { expectedDurationBreakdown } from '../lib/wordTiming'
 import { useWhisper } from '../asr/useWhisper'
@@ -136,6 +136,7 @@ function ComparedWords({
   undecidedWords,
   onPlayWord,
   activeRefIndex,
+  metersByWord,
 }: {
   verdicts: WordVerdict[]
   referenceWords: WordWithRules[]
@@ -145,6 +146,10 @@ function ComparedWords({
   /** Plays this word alone, when the recording and its timing are both to hand. */
   onPlayWord?: ((refIndex: number) => void) | null
   activeRefIndex?: number | null
+  /** One bar per ruling under each word, filled from the sound actually held in the recording.
+   * These used to run live, on a cursor that could not tell which word was being recited; here
+   * they sit under the right word by construction. */
+  metersByWord?: Map<number, RuleMeter[]>
   /** Words carrying at least one ruling nothing could verify. They are not faults, and they
    * are not clean either — painting them exactly like a verified word was the quiet overclaim
    * this marking removes. */
@@ -155,6 +160,18 @@ function ComparedWords({
 
   /** Wraps a word so tapping it plays that word back — the shortest path from a claim about a
    * sound to the sound itself. */
+  /** The word, with its rulings' bars beneath it where they were measured. */
+  const withBars = (refIndex: number, content: React.ReactNode) => {
+    const meters = metersByWord?.get(refIndex)
+    if (!meters || meters.length === 0) return content
+    return (
+      <span className={clsx('relative inline-block', ruleBarsHeightClass(meters.length))}>
+        {content}
+        <RuleBars meters={meters} />
+      </span>
+    )
+  }
+
   const playable = (refIndex: number, content: React.ReactNode, extra?: string) =>
     onPlayWord ? (
       <button
@@ -167,10 +184,10 @@ function ComparedWords({
           extra,
         )}
       >
-        {content}
+        {withBars(refIndex, content)}
       </button>
     ) : (
-      content
+      withBars(refIndex, content)
     )
 
   return (
@@ -298,144 +315,11 @@ function ComparedWords({
   )
 }
 
-/** Renders one ayah's words while still recording, colored by the live RMS/VAD tracker's
- * *timing* verdict alone (no ASR involved yet — see liveTracker.ts): the in-progress word
- * pulses gold, a well-timed word shows its own tajweed color, a mistimed one turns amber
- * (short/long) or red (nothing heard), and anything not reached yet stays faint. Word
- * *correctness* (right/wrong text) only becomes available once, from the single Whisper
- * pass that runs after the reciter stops — see ComparedWords for that final rendering. */
-function LiveWords({
-  words,
-  liveWords,
-  liveMeters,
-  fillRefs,
-}: {
-  words: WordWithRules[]
-  liveWords: LiveWordResult[]
-  /** The rulings of the word being recited right now — one bar each, in their letters'
-   * order. Their layout (where the finish line sits, how much optional track to draw) only
-   * changes when the word does. */
-  liveMeters: RuleMeter[]
-  /** The filled part of each bar, handed back so the animation-frame loop can set the width
-   * directly. Going through React state moved them at best every 80ms and, worse,
-   * re-rendered this whole list to do it — which starved the frames feeding the tracker and
-   * left the bars visibly trailing the voice. */
-  fillRefs?: (index: number, el: HTMLSpanElement | null) => void
-}) {
-  return (
-    <div className="flex flex-wrap gap-x-1.5 gap-y-2 font-quran text-2xl" dir="rtl">
-      {words.map((w, i) => {
-        const live = liveWords[i]
-        const salientRule = primaryRule(w.rules)
-        const tajweedColor = salientRule ? TAJWEED_RULE_MAP[salientRule].color : null
-
-        if (!live || live.status === 'pending') {
-          return (
-            <span key={i} className="px-1.5 py-0.5 text-faint/50">
-              {w.word}
-            </span>
-          )
-        }
-        if (live.status === 'current') {
-          // One bar per ruling, in the ruling's own colour, filling only from the hold that
-          // belongs to it — see RuleBars and ruleMeter.ts. A ruling not yet reached stays
-          // faint rather than empty: the reciter is still on the letters before it.
-          const allComplete = liveMeters.length > 0 && liveMeters.every((m) => m.state === 'complete')
-          return (
-            <span
-              key={i}
-              className={clsx('relative inline-block px-1.5 pt-0.5', ruleBarsHeightClass(liveMeters.length))}
-            >
-              <span
-                className={clsx(
-                  'rounded-lg px-1 ring-1 transition-colors',
-                  allComplete ? 'bg-ok/15 text-ok ring-ok/50' : 'bg-accent-soft text-accent ring-gold/60',
-                )}
-              >
-                {w.word}
-              </span>
-              <RuleBars meters={liveMeters} fillRefs={fillRefs} />
-            </span>
-          )
-        }
-
-        // A word that owed a hold and did not deliver it is named, not merely coloured —
-        // "أقصر من المتوقع" tells a reciter nothing they can act on, while "لم تكتمل الغُنّة"
-        // does. Timing evidence only: it fires when the word had no room for the hold.
-        if (live.missed) {
-          const ruleName = TAJWEED_RULE_MAP[live.missed.rule]?.nameAr ?? (live.missed.kind === 'ghunnah' ? 'الغُنّة' : 'المدّ')
-          const severe = live.missed.severity === 'severe'
-          const meters = live.meters ?? []
-          return (
-            // Wide enough for the ruling's name to be read. The label is the whole point of
-            // naming the fault on the word — truncated to «المَدُّ العَارِضُ لِلشّ…» it teaches
-            // nothing, and a short word like «عَمَّ» is far narrower than any rule name.
-            <span key={i} className="relative inline-block min-w-[6.5rem] px-1.5 pb-8 pt-0.5">
-              <span
-                className={clsx(
-                  'rounded-lg px-1 ring-1',
-                  severe ? 'bg-danger-soft text-danger ring-danger/50' : 'bg-warn-soft text-warn ring-warn/50',
-                )}
-              >
-                {w.word}
-              </span>
-              <span
-                className={clsx(
-                  'absolute inset-x-0 bottom-0 block text-balance text-center font-sans text-[9px] font-bold leading-tight',
-                  severe ? 'text-danger' : 'text-warn',
-                )}
-              >
-                {severe ? `${ruleName} لم يظهر` : `${ruleName} لم يكتمل`}
-              </span>
-              {/* Frozen at what was actually given, so the reciter sees *which* of the word's
-                  rulings fell short rather than only that one did. */}
-              {meters.length > 0 && (
-                <span className="absolute inset-x-1 bottom-5 block">
-                  <RuleBars meters={meters} />
-                </span>
-              )}
-            </span>
-          )
-        }
-        if (live.status === 'short' || live.status === 'long') {
-          return (
-            <span
-              key={i}
-              className="rounded-lg bg-warn-soft px-1.5 py-0.5 text-warn underline decoration-wavy decoration-warn"
-              title={live.status === 'short' ? '⏱️ أقصر من الزمن المتوقع لهذه الكلمة' : '⏱️ أطول من الزمن المتوقع لهذه الكلمة'}
-            >
-              {w.word}
-            </span>
-          )
-        }
-        if (live.status === 'silent') {
-          return (
-            <span key={i} className="rounded-lg bg-danger-soft px-1.5 py-0.5 text-danger" title="لم يُسمع نطق واضح لهذه الكلمة">
-              {w.word}
-            </span>
-          )
-        }
-        return (
-          <span key={i} className="px-1.5 py-0.5" style={tajweedColor ? { color: tajweedColor } : undefined}>
-            {w.word}
-          </span>
-        )
-      })}
-    </div>
-  )
-}
-
 function formatElapsed(ms: number): string {
   const total = Math.floor(ms / 1000)
   return `${String(Math.floor(total / 60)).padStart(2, '0')}:${String(total % 60).padStart(2, '0')}`
 }
 
-/**
- * The recorder control. The ring around the button tracks the microphone's actual level, so
- * a reciter can see they are being heard before committing to a whole passage — the previous
- * plain button gave no indication of that at all, and a recording that turned out to be too
- * quiet was only discovered after the analysis had run.
- */
 function Recorder({
   recording,
   busy,
@@ -548,6 +432,7 @@ export function PracticePage() {
     audio: Float32Array
     report: TajweedReport
     verdicts: WordVerdict[]
+    metersByWord: Map<number, RuleMeter[]>
   } | null>(null)
   /**
    * The riwāya being judged by. Only Ḥafṣ is supported, and saying which one out loud is part
@@ -802,6 +687,19 @@ export function PracticePage() {
   const undecidedWords = useMemo(() => (report ? undecidedWordIndices(report) : new Set<number>()), [report])
 
   /**
+   * Roughly how much of the passage has been recited, by the clock.
+   *
+   * The one thing loudness and a clock can honestly say together. It is capped at a hundred
+   * because a reciter slower than the pace they selected has not made a mistake, and a bar
+   * that fills and then sits full says "still listening" better than one that overflows.
+   */
+  const expectedPassageMs = useMemo(
+    () => referenceWords.reduce((sum, w) => sum + expectedDurationBreakdown(w, paceId).total, 0),
+    [referenceWords, paceId],
+  )
+  const livePassageProgress = expectedPassageMs > 0 ? Math.min(100, Math.round((elapsedMs / expectedPassageMs) * 100)) : 0
+
+  /**
    * The recording, playable — and playable one word at a time.
    *
    * Everything this screen says about a madd or a ghunnah is a claim about a sound that has
@@ -1037,6 +935,7 @@ export function PracticePage() {
       audio: audioForAnalysis,
       report: analysis.report,
       verdicts: analysis.verdicts,
+      metersByWord: analysis.metersByWord,
     })
 
     if (
@@ -1544,33 +1443,40 @@ export function PracticePage() {
               )}
             </h2>
 
-            {/* What the live view is, stated where it is read. The colours and the bars below
-                are a timing estimate from loudness alone — no letter has been identified and
-                no sound has been judged. Saying so is what keeps a green bar from being taken
-                for a teacher's approval. */}
+            {/*
+              * What the live view may honestly claim.
+              *
+              * It used to mark the word being recited and fill a bar under it. That rested on
+              * finding word boundaries in microphone loudness alone, and measurement says it
+              * cannot be done: in connected recitation the energy dip at a word boundary is
+              * often not there at all, so the cursor ran on the clock. Against synthesised
+              * recitations from 0.7× to 3× the assumed pace it landed on average 0.6–1.2
+              * seconds away from the true word — more than a whole word — and reached the last
+              * word at the same instant however slowly the passage was actually recited. A
+              * learner reciting carefully watched the app finish the ayah without them.
+              *
+              * Loudness *can* say whether a voice is sounding and roughly how much of the
+              * passage has been recited, so that is all that is shown, and it is labelled for
+              * what it is. Which word, and which ruling, wait for the analysis — where the
+              * timings come from forced alignment against the known text, and the rulings are
+              * measured from the held sound itself.
+              */}
             {recording && (
-              <p className="mb-3 rounded-xl border border-line-soft bg-bg/40 px-3.5 py-2.5 text-xs leading-relaxed text-faint">
-                هذا تتبّع زمني تقديري أثناء القراءة: يقيس مقدار ما تمدّه من زمن، لا صحّة المخرج ولا صفة الحرف.
-                التصحيح الفعلي يظهر بعد انتهاء التسجيل.
-              </p>
-            )}
-
-            {/* Provisional notes about ayahs already finished — never about the one in hand. */}
-            {recording && pendingLiveNotes.length > 0 && (
-              <div className="mb-3 rounded-xl border border-warn/40 bg-warn-soft/70 px-3.5 py-3" role="status">
-                <p className="text-xs font-bold text-warn">ملاحظات مبدئية على ما قرأته (تُراجَع بعد التسجيل)</p>
-                <ul className="mt-1.5 space-y-1 text-sm font-semibold text-warn">
-                  {pendingLiveNotes.slice(-3).map((n) => (
-                    <li key={`${n.index}-${n.rule}`} className="flex items-center gap-2">
-                      <span aria-hidden>{n.kind === 'ghunnah' ? '👃' : '〰️'}</span>
-                      <span>
-                        {TAJWEED_RULE_MAP[n.rule]?.nameAr ?? 'الحكم'} في{' '}
-                        <span className="font-quran text-base">«{referenceWords[n.index]?.word ?? ''}»</span> بدا
-                        {n.severity === 'severe' ? ' غير مُؤدّى' : ' غير مكتمل'} في الزمن
-                      </span>
-                    </li>
-                  ))}
-                </ul>
+              <div className="mb-3 rounded-xl border border-line-soft bg-bg/40 px-3.5 py-3">
+                <div className="mb-1.5 flex items-center justify-between gap-3 text-xs">
+                  <span className="font-bold text-faint">{livePassageProgress}٪ من زمن المقطع تقديريًا</span>
+                  <span className="font-bold text-faint">{liveSnapshot?.started ? 'أسمعك' : 'في انتظار صوتك'}</span>
+                </div>
+                <div className="h-1.5 w-full overflow-hidden rounded-full bg-line-soft">
+                  <div
+                    className="h-full rounded-full bg-accent transition-[width] duration-300"
+                    style={{ width: `${livePassageProgress}%` }}
+                  />
+                </div>
+                <p className="mt-2 text-xs leading-relaxed text-faint">
+                  هذا تقدير زمني للمقطع كلّه، ولا يعرف أيّ كلمة تقرأ الآن: تحديد الكلمات والأحكام يحتاج تحليلًا لا
+                  يتم إلا بعد التسجيل، وهو ما يظهر لك حينها — بالكلمة وبالحكم وبصوتك مسجّلًا.
+                </p>
               </div>
             )}
 
@@ -1596,6 +1502,7 @@ export function PracticePage() {
                             undecidedWords={undecidedWords}
                             onPlayWord={playWord}
                             activeRefIndex={activeWordIndex}
+                            metersByWord={lastAttempt?.metersByWord}
                           />
                         ) : (
                           <div className="rounded-xl border border-dashed border-line bg-line-soft/40 px-3 py-2.5 text-sm text-faint">
@@ -1637,30 +1544,18 @@ export function PracticePage() {
                   )
                 }
 
-                // Still recording: no ASR result yet — reveal progress from the live RMS
-                // timing tracker alone (see LiveWords).
-                // `>= r.start`, not `>`: while the very first word of an ayah is being
-                // recited the cursor still sits on it, and a strict comparison hid the
-                // whole ayah behind the "not reached yet" placeholder until that word
-                // finished — so the live view only ever appeared partway in.
-                const reached = !!liveSnapshot?.started && liveSnapshot.cursor >= r.start
+                // Still recording. The words are shown plainly: which one is being recited
+                // is a claim this app cannot support — see the note above the list.
                 return (
                   <div key={r.ayahNumber} className="flex items-start gap-2">
                     <div className="flex-1">
-                      {reached ? (
-                        <LiveWords
-                          words={referenceWords.slice(r.start, r.end)}
-                          liveWords={(liveSnapshot?.words ?? []).slice(r.start, r.end)}
-                          liveMeters={liveSnapshot?.currentRuleMeters ?? []}
-                          fillRefs={(index, el) => {
-                            holdFillRefs.current[index] = el
-                          }}
-                        />
-                      ) : (
-                        <div className="rounded-xl border border-dashed border-line bg-line-soft/40 px-3 py-2.5 text-sm text-faint">
-                          ⋯ لم تصل إلى هذه الآية بعد
-                        </div>
-                      )}
+                      <div className="flex flex-wrap gap-x-1.5 gap-y-1 font-quran text-2xl text-muted" dir="rtl">
+                        {referenceWords.slice(r.start, r.end).map((w, i) => (
+                          <span key={`${r.ayahNumber}-${i}`} className="px-1.5 py-0.5">
+                            {w.word}
+                          </span>
+                        ))}
+                      </div>
                     </div>
                     <AyahBadge n={r.numberInSurah} />
                   </div>
@@ -1923,6 +1818,10 @@ export function PracticePage() {
             <span className="flex items-center gap-1.5">
               <span className="inline-block h-3 w-3 rounded bg-qalqalah-soft ring-1 ring-qalqalah/40" /> قلقلة غير واضحة
               (إشارة تقديرية)
+            </span>
+            <span className="flex items-center gap-1.5">
+              <span className="inline-block h-1 w-4 rounded-full bg-accent" /> خطّ تحت الكلمة لكل حكم مدّي أو غُنّة:
+              يمتلئ بمقدار ما ثبت من الصوت المحفوظ في تسجيلك
             </span>
             </div>
           </div>

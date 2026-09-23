@@ -25,6 +25,10 @@ export interface ClipPlayer {
   rate: number
   setRate: (rate: number) => void
   ready: boolean
+  /** The recording itself, so a page can offer a plain browser player as well. */
+  url: string | null
+  /** Why nothing was heard, when nothing was heard. */
+  error: string | null
 }
 
 export function useClipPlayer(url: string | null): ClipPlayer {
@@ -34,6 +38,7 @@ export function useClipPlayer(url: string | null): ClipPlayer {
   const [activeRange, setActiveRange] = useState<[number, number] | null>(null)
   const [rate, setRate] = useState(1)
   const [ready, setReady] = useState(false)
+  const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
     if (!url) {
@@ -43,8 +48,17 @@ export function useClipPlayer(url: string | null): ClipPlayer {
     }
     const audio = new Audio(url)
     audio.preload = 'auto'
+    // Without this the element may sit at readyState 0 until something asks it to play, and
+    // seeking a media element that has no metadata yet throws — which is exactly what happened:
+    // pressing «اسمع تلاوتك» set currentTime first, the assignment threw inside the click
+    // handler, and play() was never reached. Nothing played and nothing said why.
+    audio.load()
     audioRef.current = audio
+    setError(null)
     setReady(true)
+    const onError = () =>
+      setError(`تعذّر تشغيل التسجيل (${audio.error?.code ?? '?'}) — جرّب مشغّل المتصفح أدناه.`)
+    audio.addEventListener('error', onError)
     // The element is polled rather than driven by 'timeupdate', which fires only about four
     // times a second — far too coarse to stop cleanly at the end of a single word.
     let raf = 0
@@ -67,6 +81,7 @@ export function useClipPlayer(url: string | null): ClipPlayer {
     return () => {
       cancelAnimationFrame(raf)
       audio.removeEventListener('ended', onEnded)
+      audio.removeEventListener('error', onError)
       audio.pause()
       audioRef.current = null
       setReady(false)
@@ -77,30 +92,56 @@ export function useClipPlayer(url: string | null): ClipPlayer {
     if (audioRef.current) audioRef.current.playbackRate = rate
   }, [rate])
 
-  const playRange = useCallback((from: number, to: number) => {
-    const audio = audioRef.current
-    if (!audio) return
-    // A word clipped exactly at its boundaries starts mid-sound; a little air either side makes
-    // it recognisable as the word it is.
-    const start = Math.max(0, from - PAD_MS / 1000)
-    stopAtRef.current = to + PAD_MS / 1000
-    audio.currentTime = start
-    audio.playbackRate = rate
-    void audio.play()
-    setPlaying(true)
-    setActiveRange([from, to])
-  }, [rate])
+  /**
+   * Starts playback at a position, waiting for the element to be seekable first.
+   *
+   * A media element cannot be seeked before it has metadata — the assignment throws — and a
+   * blob URL is not necessarily ready the instant it is created. So the seek is deferred to
+   * `loadedmetadata` when it has to be, and every failure is reported rather than swallowed:
+   * the first version called `void audio.play()` and discarded the rejected promise, so a
+   * recording that would not play looked exactly like one that played silently.
+   */
+  const startAt = useCallback(
+    (from: number, stopAt: number | null, range: [number, number] | null) => {
+      const audio = audioRef.current
+      if (!audio) return
+      const begin = () => {
+        try {
+          audio.currentTime = from
+        } catch {
+          // Seeking failed; playing from the top is better than playing nothing.
+        }
+        audio.playbackRate = rate
+        audio
+          .play()
+          .then(() => {
+            setError(null)
+            setPlaying(true)
+            setActiveRange(range)
+          })
+          .catch((err: unknown) => {
+            setPlaying(false)
+            setActiveRange(null)
+            setError(`تعذّر تشغيل التسجيل: ${(err as Error).message} — جرّب مشغّل المتصفح أدناه.`)
+          })
+      }
+      stopAtRef.current = stopAt
+      if (audio.readyState >= 1) begin()
+      else audio.addEventListener('loadedmetadata', begin, { once: true })
+    },
+    [rate],
+  )
 
-  const playAll = useCallback(() => {
-    const audio = audioRef.current
-    if (!audio) return
-    stopAtRef.current = null
-    audio.currentTime = 0
-    audio.playbackRate = rate
-    void audio.play()
-    setPlaying(true)
-    setActiveRange(null)
-  }, [rate])
+  const playRange = useCallback(
+    (from: number, to: number) => {
+      // A word clipped exactly at its boundaries starts mid-sound; a little air either side
+      // makes it recognisable as the word it is.
+      startAt(Math.max(0, from - PAD_MS / 1000), to + PAD_MS / 1000, [from, to])
+    },
+    [startAt],
+  )
+
+  const playAll = useCallback(() => startAt(0, null, null), [startAt])
 
   const stop = useCallback(() => {
     const audio = audioRef.current
@@ -111,7 +152,7 @@ export function useClipPlayer(url: string | null): ClipPlayer {
     setActiveRange(null)
   }, [])
 
-  return { playRange, playAll, stop, playing, activeRange, rate, setRate, ready }
+  return { playRange, playAll, stop, playing, activeRange, rate, setRate, ready, url, error }
 }
 
 /** A blob URL for the samples just recorded, revoked when it is replaced. */
@@ -188,6 +229,15 @@ export function PlayerBar({
       <span className="text-xs leading-relaxed text-faint">
         اضغط أي كلمة في المقارنة أدناه لسماع موضعها وحده.
       </span>
+      {player.error && <p className="w-full text-xs font-bold text-warn">{player.error}</p>}
+      {/* The browser's own player, always. If anything above fails — a codec, an autoplay
+          policy, a device quirk — the learner can still hear the recording and still save it,
+          which matters more than the buttons looking uniform. */}
+      {player.url && (
+        <audio controls src={player.url} className="mt-1 w-full" preload="metadata">
+          تعذّر تشغيل الصوت في هذا المتصفح.
+        </audio>
+      )}
     </div>
   )
 }

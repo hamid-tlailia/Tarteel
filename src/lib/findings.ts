@@ -37,6 +37,9 @@ export type EvidenceKind =
   | 'nasality'
   /** A closure followed by a release burst inside the word's span. */
   | 'burst'
+  /** The sustained sound itself, measured inside the word — the ruling's own performance
+   * rather than the length of the word around it. See holdAudit.ts. */
+  | 'hold'
 
 export type FindingOutcome = 'met' | 'short' | 'absent' | 'undecided'
 
@@ -101,14 +104,14 @@ export function evidenceForRule(rule: TajweedRuleId): EvidenceKind[] {
     case 'madda_leen':
     case 'madda_arid':
     case 'madda_iwad':
-      return ['duration']
+      return ['hold', 'duration']
     // A held nasal sound: both how long it lasted and whether it was nasal at all.
     case 'ghunnah':
     case 'ikhafa':
     case 'ikhafa_shafawi':
     case 'idgham_ghunnah':
     case 'iqlab':
-      return ['duration', 'nasality']
+      return ['hold', 'duration', 'nasality']
     case 'qalqalah':
       return ['burst']
     default:
@@ -234,10 +237,20 @@ export function buildTajweedReport({
         findings.push({ ...base, outcome: 'undecided', reason: 'no-timing' })
         continue
       }
-      // The gravest thing any measurement found decides the outcome, and a measurement that
-      // found nothing wrong outranks one that could not look. A ruling is only undecided
-      // when *no* check managed to settle it.
-      const decisive = relevant.reduce((worst, c) => (SEVERITY[c.outcome] > SEVERITY[worst.outcome] ? c : worst))
+      /*
+       * Where the ruling's own sound was measured, that measurement decides.
+       *
+       * The instruments are not equals. A hold check listened to the sustained sound this
+       * ruling is made of; a duration check inferred it from how long the whole word took,
+       * which on a two-ḥaraka madd is barely evidence at all. Letting the gravest verdict win
+       * regardless would let the weaker instrument overrule the stronger one — and, worse,
+       * would let a word that is merely short convict a madd the recording plainly contains.
+       */
+      const direct = relevant.filter((c) => c.evidence === 'hold' && c.outcome !== 'undecided')
+      const pool = direct.length > 0 ? direct : relevant
+      // Within one instrument, the gravest thing found decides, and a measurement that found
+      // nothing wrong outranks one that could not look.
+      const decisive = pool.reduce((worst, c) => (SEVERITY[c.outcome] > SEVERITY[worst.outcome] ? c : worst))
       findings.push({
         ...base,
         outcome: decisive.outcome,

@@ -67,16 +67,21 @@ export function stripTajweedMarkup(raw: string): string {
  * that letter as an ʿāriḍ (two ḥarakāt required, four more permitted — see wordTiming.ts);
  * had the reader gone on calling it a jāʾiz, the meter and the label would have disagreed.
  */
-const REFINES: Partial<Record<TajweedRuleId, TajweedRuleId>> = {
-  madda_arid: 'madda_permissible',
-  madda_leen: 'madda_permissible',
+const REFINES: Partial<Record<TajweedRuleId, TajweedRuleId[]>> = {
+  // The ʿāriḍ is the madd letter that precedes the letter the stop makes sākin — the *same*
+  // letter the edition has already marked, whether with its broad "permissible" code or as a
+  // plain ṭabīʿī. «قَالَ» stopped on is qāl with one held alif, not an alif held twice: counting
+  // both charged the word two holds where it has one, and the hold detector, hearing the single
+  // sustained alif, then had to report one of the two rulings as never performed.
+  madda_arid: ['madda_permissible', 'madda_normal'],
+  madda_leen: ['madda_permissible'],
   // The two ṣilah madds *are* the madd the edition marks on the pronoun's small wāw or yāʾ,
   // named more precisely — not a second hold beside it. Letting both stand charged «بِهِۦ» two
   // ḥarakāt for the ṣilah and two more for the marked madd, and word timings from nine
   // published recitations caught it at once: «بِهِۦ», «رَبِّهِۦ» and «فَجَعَلَهُۥ» were reported
   // short for every single reciter, because no reciter holds a two-ḥaraka madd for four.
-  madda_sila_sughra: 'madda_normal',
-  madda_sila_kubra: 'madda_normal',
+  madda_sila_sughra: ['madda_normal'],
+  madda_sila_kubra: ['madda_normal'],
 }
 
 /**
@@ -135,13 +140,16 @@ export function applyDerivedRuleSpans(segments: TajweedSegment[]): TajweedSegmen
     )
     const wordEnd = w.start + w.text.length
     for (const span of spans) {
-      const refined = REFINES[span.rule]
+      const refines = REFINES[span.rule]
+      const refined = (rule: TajweedRuleId | undefined): boolean =>
+        rule !== undefined && refines !== undefined && refines.includes(rule)
       /** Rewrites the whole run of the rule being refined that `at` sits in. */
       const absorbRun = (at: number) => {
+        const marked = rules[at]
         let from = at
-        while (from > w.start && rules[from - 1] === refined) from--
+        while (from > w.start && rules[from - 1] === marked) from--
         let to = at
-        while (to + 1 < wordEnd && rules[to + 1] === refined) to++
+        while (to + 1 < wordEnd && rules[to + 1] === marked) to++
         for (let m = from; m <= to; m++) {
           rules[m] = span.rule
           // One marking, not two: the absorbed run joins the derived span's own marking, so
@@ -152,9 +160,9 @@ export function applyDerivedRuleSpans(segments: TajweedSegment[]): TajweedSegmen
       // The derived letter and the edition's marking need not sit on the same character. The
       // ṣilah is derived on the hāʾ while the edition marks the small wāw or yāʾ that follows
       // it, so a refinement that only looked at its own characters left both in place.
-      if (refined !== undefined) {
+      if (refines !== undefined) {
         for (const probe of [w.start + span.end, w.start + span.start - 1]) {
-          if (probe >= w.start && probe < wordEnd && rules[probe] === refined) absorbRun(probe)
+          if (probe >= w.start && probe < wordEnd && refined(rules[probe])) absorbRun(probe)
         }
       }
       for (let k = span.start; k < span.end; k++) {
@@ -164,7 +172,7 @@ export function applyDerivedRuleSpans(segments: TajweedSegment[]): TajweedSegmen
         if (marked === undefined) {
           rules[at] = span.rule
           origin[at] = -(i + 1)
-        } else if (refined !== undefined && marked === refined) {
+        } else if (refined(marked)) {
           // Take over the whole run the edition marked, not just the madd letter itself —
           // the kasra or damma that carries it belongs to the same colouring, and splitting
           // it would paint «ـِي» in two hues for one ruling.

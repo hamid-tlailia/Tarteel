@@ -17,7 +17,10 @@
  * which is what makes the match reliable without knowing any letter's identity.
  */
 
-const FFT_SIZE = 512
+/** The window the detector analyses. Exported because a caller replaying a recording has to
+ * hand it whole windows: anything shorter is discarded, which is how an audit fed 20ms hops
+ * came back reporting that nothing in the recording was ever held. */
+export const FFT_SIZE = 512
 const HANN = Float32Array.from({ length: FFT_SIZE }, (_, i) => 0.5 - 0.5 * Math.cos((2 * Math.PI * i) / FFT_SIZE))
 
 function fftInPlace(re: Float32Array, im: Float32Array): void {

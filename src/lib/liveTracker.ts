@@ -81,7 +81,30 @@ const DIP_MS = 30
 /** No dip may end a word before it has had this share of what it is due. */
 const WINDOW_EARLIEST = 0.7
 /** Past this multiple of its due, the word ends whether or not the voice ever dipped. */
-const WINDOW_LATEST = 1.4
+const WINDOW_LATEST = 1.8
+/**
+ * How much slower the reciter is assumed to be after a word that ended only because the clock
+ * said so, and the ceiling on that assumption.
+ *
+ * A word closed by the window is not a measurement of anything — the word lasted exactly as
+ * long as the window allowed — which is why its ratio is kept out of the pace estimate. But it
+ * is *evidence*: the voice was still going when the window ran out, so this reciter is slower
+ * than the pace they selected. Refusing to act on that evidence at all left the cursor running
+ * on a clock that nothing could change. Measured on synthetic recitations at two, two and a
+ * half and three times the assumed pace, the cursor reached the last word at 2250ms in every
+ * one of them — the same instant, whatever the reciter did, which is what «تتقدم في الكلمات
+ * كأنها لا تسمع» looks like from the inside.
+ *
+ * So each window close widens the next window by a quarter, up to three times the selected
+ * pace — a learner reciting at a third of ḥadr is ordinary. It is a step rather than a jump
+ * because the window itself is the only number available to jump to, and setting the estimate
+ * from the window would let a smooth voice that never dips talk the tracker into believing it
+ * is slower and slower without limit. A single heard boundary overrides all of it: the median
+ * of actually-measured words is assigned outright, not multiplied.
+ */
+const WINDOW_GROWTH = 1.25
+const SCALE_MAX = 3
+const SCALE_MIN = 0.6
 /** Safety cap: force-close a word that's been open far longer than any madd could justify. */
 
 const START_THR = 0.012
@@ -154,6 +177,16 @@ export class LiveTajweedTracker {
   private wordPeak = 0
   /** How long the level has stayed below that reference. */
   private dipMs = 0
+  /**
+   * How far into the word the first plausible boundary was heard — a dip long enough to be a
+   * word ending, which the window refused because the word had not yet had its due.
+   *
+   * It is the only evidence available that the reciter is *faster* than the pace they selected.
+   * Without it the tracker could learn to slow down (a word that outlasts its window) but never
+   * to speed up unless the reciter left actual silence between words, which in tarteel they do
+   * not — so a quick reciter was followed by a cursor up to two seconds behind them.
+   */
+  private firstDipEndMs: number | null = null
   private tau: number
   private onWord: ((index: number, result: LiveWordResult) => void) | null
 
@@ -236,6 +269,7 @@ export class LiveTajweedTracker {
         this.holds.reset()
         this.wordPeak = rms
         this.dipMs = 0
+        this.firstDipEndMs = null
         this.rev++
       }
       this.voicedMs += dt
@@ -258,6 +292,9 @@ export class LiveTajweedTracker {
       this.wordPeak = Math.max(rms, this.wordPeak * 0.997)
       if (rms < this.wordPeak * DIP_RATIO) this.dipMs += dt
       else this.dipMs = 0
+      if (this.dipMs >= DIP_MS && this.firstDipEndMs === null && this.voicedMs >= MIN_VOICED_MS) {
+        this.firstDipEndMs = this.voicedMs - this.dipMs
+      }
 
       if (this.onLastWord()) return
       const due = (this.expectedMs[this.cursor] ?? 0) * this.scale
@@ -295,7 +332,23 @@ export class LiveTajweedTracker {
     // whose dips are too shallow to detect still keeps a bounded error instead of drifting.
     if (reason === 'heard' && measured >= MIN_VOICED_MS && this.expectedMs[i] > 0) {
       this.ratios.push(measured / this.expectedMs[i])
-      if (this.ratios.length >= 2) this.scale = Math.min(1.8, Math.max(0.6, median(this.ratios)))
+      if (this.ratios.length >= 2) this.scale = Math.min(SCALE_MAX, Math.max(SCALE_MIN, median(this.ratios)))
+    } else if (reason === 'window') {
+      const early = this.firstDipEndMs
+      const due = this.expectedMs[i] * scaleBefore
+      if (early !== null && early >= MIN_VOICED_MS && due > 0 && early < due * WINDOW_EARLIEST) {
+        // A boundary *was* heard, early, and refused because the word had not yet had its due —
+        // and then the word had to be closed by the clock anyway. That earlier boundary is the
+        // better estimate of where this reciter's words end, so it is what the pace learns from,
+        // and the scale comes down instead of up.
+        this.ratios.push(early / this.expectedMs[i])
+        this.scale = Math.min(SCALE_MAX, Math.max(SCALE_MIN, median(this.ratios)))
+      } else {
+        // Nothing was heard that could have ended the word: the voice was still going when the
+        // clock ran out, so widen the next window rather than marching on at a rate no amount
+        // of listening can change. See WINDOW_GROWTH.
+        this.scale = Math.min(SCALE_MAX, this.scale * WINDOW_GROWTH)
+      }
     }
     const expected = Math.max(60, Math.round(this.expectedMs[i] * this.scale))
     const status = classifyDuration(measured, expected, this.tau)

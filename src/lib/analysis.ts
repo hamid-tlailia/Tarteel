@@ -18,6 +18,8 @@ import {
 import { auditQalqalah, type QalqalahAlert } from './qalqalah'
 import { auditGhunnahNasality, measureWordTimbre, type NasalityAlert, type TimbreMeasurement } from './nasality'
 import { buildTajweedReport, type DetectorCheck, type TajweedReport } from './findings'
+import { auditHoldsInWords } from './holdAudit'
+import type { RuleMeter } from './ruleMeter'
 
 /**
  * The whole judgement, in one place: transcript → words → rulings → report.
@@ -65,6 +67,9 @@ export interface AnalysisResult {
   nasalityAlerts: NasalityAlert[]
   recitedPace: { pace: PaceProfile; harakaMs: number; matchesSelected: boolean } | null
   follow: number | null
+  /** The per-ruling meters measured from the recording, so the results can show the same bars
+   * the live view used to — this time filled from the sound itself. */
+  metersByWord: Map<number, RuleMeter[]>
   /** The chunks after collapsing, since callers that display or store them want these. */
   chunks: TimedChunk[]
 }
@@ -111,7 +116,17 @@ export function analyzeRecitation(input: AnalysisInput): AnalysisResult {
     ? auditQalqalah(input.audio, referenceWords, input.wordTimings, correctRefIndices)
     : []
   const nasalityChecks = auditGhunnahNasality(referenceWords, timbre, correctRefIndices)
-  const checks = [...durationChecks, ...qalqalahChecks, ...nasalityChecks]
+  // The rulings measured by the sound they are made of, rather than by the length of the word
+  // around them — the only instrument that can resolve a two-ḥaraka madd. See holdAudit.ts.
+  const holdAudit = auditHoldsInWords({
+    referenceWords,
+    wordTimings: input.wordTimings,
+    audio: input.audio,
+    sampleRate: input.sampleRate,
+    correctRefIndices,
+    paceId,
+  })
+  const checks = [...holdAudit.checks, ...durationChecks, ...qalqalahChecks, ...nasalityChecks]
 
   const report = buildTajweedReport({
     referenceWords,
@@ -150,5 +165,6 @@ export function analyzeRecitation(input: AnalysisInput): AnalysisResult {
     follow:
       input.wordTimings && reference ? followScore(referenceWords, input.wordTimings, reference) : null,
     chunks: collapsed.chunks,
+    metersByWord: holdAudit.metersByWord,
   }
 }
