@@ -30,7 +30,7 @@ export function ProgressPage() {
 
   const chartData = attempts.slice(-30).map((a, i) => ({
     name: `#${i + 1}`,
-    دقة: a.accuracy,
+    'دقة الكلمات': a.accuracy,
     date: new Date(a.date).toLocaleDateString('ar-EG'),
   }))
 
@@ -47,12 +47,18 @@ export function ProgressPage() {
 
       <div className="grid gap-4 sm:grid-cols-3">
         <StatCard label="محاولات التلاوة" value={attempts.length} />
-        <StatCard label="متوسط الدقة" value={`${avgAccuracy}%`} />
+        <StatCard label="متوسط دقة الكلمات" value={`${avgAccuracy}%`} />
         <StatCard label="أيام متتالية" value={streak} />
       </div>
 
       <section className="card-lux p-6">
-        <h2 className="title-ornament mb-5 font-display text-xl font-bold text-accent">تطور دقة التلاوة</h2>
+        <h2 className="title-ornament mb-5 font-display text-xl font-bold text-accent">تطوّر دقة الكلمات</h2>
+        {/* Named for what it measures. This series comes from word matching alone — whether the
+            words were said as written — and nothing in it is a judgement on tajweed, which is
+            counted ruling by ruling on the practice page and deliberately never averaged. */}
+        <p className="mb-4 text-xs leading-relaxed text-faint">
+          هذا الرقم يقيس مطابقة الكلمات للنص فقط. أحكام التجويد لا تُختصر في نسبة، وتُعرض حكمًا حكمًا بعد كل تلاوة.
+        </p>
         {attempts.length === 0 ? (
           <p className="text-sm text-muted">
             لا توجد محاولات بعد.{' '}
@@ -69,7 +75,7 @@ export function ProgressPage() {
                 <XAxis dataKey="name" tick={{ fontSize: 12, fill: tickColor }} stroke={gridColor} />
                 <YAxis domain={[0, 100]} tick={{ fontSize: 12, fill: tickColor }} stroke={gridColor} />
                 <Tooltip
-                  formatter={(value) => [`${value}%`, 'الدقة']}
+                  formatter={(value) => [`${value}%`, 'دقة الكلمات']}
                   labelFormatter={(_, payload) => payload?.[0]?.payload?.date ?? ''}
                   contentStyle={{
                     backgroundColor: surfaceColor,
@@ -80,7 +86,7 @@ export function ProgressPage() {
                     fontSize: '0.8rem',
                   }}
                 />
-                <Line type="monotone" dataKey="دقة" stroke={lineColor} strokeWidth={2.5} dot={{ r: 3, fill: lineColor, strokeWidth: 0 }} activeDot={{ r: 5 }} />
+                <Line type="monotone" dataKey="دقة الكلمات" stroke={lineColor} strokeWidth={2.5} dot={{ r: 3, fill: lineColor, strokeWidth: 0 }} activeDot={{ r: 5 }} />
               </LineChart>
             </ResponsiveContainer>
           </div>

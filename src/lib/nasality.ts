@@ -2,6 +2,7 @@ import type { WordWithRules } from './tajweed'
 import type { TajweedRuleId } from '../types/quran'
 import { GHUNNA_RULES } from './wordTiming'
 import { analyzeSpan, type SpanTimbre } from './spectral'
+import type { DetectorCheck } from './findings'
 
 /**
  * Does the nasal sound a ghunnah calls for actually appear in the recording?
@@ -98,15 +99,26 @@ export function measureWordTimbre(
 }
 
 /**
- * Reports ghunnah-carrying words whose sound is no more nasal than this reciter's own
- * ordinary vowels. Returns nothing — never a fault — when the recording gives no usable
- * baseline to compare against.
+ * Every ghunnah the nasality check looked at, and what it found.
+ *
+ * The three cases that used to return nothing are now named rather than passed over. No
+ * baseline (a passage of nothing but nasal words), no usable measurement (a span too brief to
+ * analyse), or a word the alignment never confirmed all leave the ruling undecided — "I could
+ * not tell" — instead of the silence that used to read as approval. See findings.ts.
  */
-export function detectGhunnahNasalityAlerts(
+export interface NasalityCheck extends DetectorCheck {
+  /** The measured numbers, kept on the check so the alert below needs no second pass over
+   * the same reasoning — two copies of one threshold is how they drift apart. */
+  measuredDb: number | null
+  baselineDb: number | null
+  requiredDb: number | null
+}
+
+export function auditGhunnahNasality(
   referenceWords: WordWithRules[],
   measurements: (TimbreMeasurement | null)[],
   correctRefIndices: Set<number>,
-): NasalityAlert[] {
+): NasalityCheck[] {
   const baseline: number[] = []
   referenceWords.forEach((refWord, i) => {
     const m = measurements[i]
@@ -115,28 +127,70 @@ export function detectGhunnahNasalityAlerts(
     if (HELD_NASAL.test(refWord.word)) return
     baseline.push(m.peakNasalDb)
   })
-  if (baseline.length < MIN_BASELINE_WORDS) return []
-
-  const baselineDb = median(baseline)
+  const haveBaseline = baseline.length >= MIN_BASELINE_WORDS
+  const baselineDb = haveBaseline ? median(baseline) : 0
   const requiredDb = baselineDb + NASAL_MARGIN_DB
 
-  const alerts: NasalityAlert[] = []
+  const checks: NasalityCheck[] = []
   referenceWords.forEach((refWord, i) => {
-    if (!correctRefIndices.has(i)) return
     const rule = ghunnahRuleOf(refWord.rules)
     if (!rule) return
-    const m = measurements[i]
-    if (!m) return
-    if (m.peakNasalDb >= requiredDb) return
-    alerts.push({
+    const base = {
       refIndex: i,
-      word: refWord.word,
-      rule,
-      measuredDb: m.peakNasalDb,
-      baselineDb,
-      requiredDb,
-      severity: m.peakNasalDb <= baselineDb + NASAL_ABSENT_MARGIN_DB ? 'severe' : 'mild',
+      rules: [rule],
+      evidence: 'nasality' as const,
+      kind: 'ghunnah' as const,
+      measuredDb: measurements[i]?.peakNasalDb ?? null,
+      baselineDb: haveBaseline ? baselineDb : null,
+      requiredDb: haveBaseline ? requiredDb : null,
+    }
+    if (!correctRefIndices.has(i)) {
+      checks.push({ ...base, outcome: 'undecided', reason: 'word-not-confirmed' })
+      return
+    }
+    if (!haveBaseline) {
+      checks.push({ ...base, outcome: 'undecided', reason: 'no-baseline' })
+      return
+    }
+    const m = measurements[i]
+    if (!m) {
+      checks.push({ ...base, outcome: 'undecided', reason: 'weak-signal' })
+      return
+    }
+    if (m.peakNasalDb >= requiredDb) {
+      checks.push({ ...base, outcome: 'met' })
+      return
+    }
+    checks.push({
+      ...base,
+      outcome: m.peakNasalDb <= baselineDb + NASAL_ABSENT_MARGIN_DB ? 'absent' : 'short',
     })
   })
+  return checks
+}
+
+/**
+ * Reports ghunnah-carrying words whose sound is no more nasal than this reciter's own
+ * ordinary vowels — the faults inside the audit above, in the shape the results card
+ * consumes. Never a fault where the recording gave nothing to compare against.
+ */
+export function detectGhunnahNasalityAlerts(
+  referenceWords: WordWithRules[],
+  measurements: (TimbreMeasurement | null)[],
+  correctRefIndices: Set<number>,
+): NasalityAlert[] {
+  const alerts: NasalityAlert[] = []
+  for (const c of auditGhunnahNasality(referenceWords, measurements, correctRefIndices)) {
+    if (c.outcome !== 'short' && c.outcome !== 'absent') continue
+    alerts.push({
+      refIndex: c.refIndex,
+      word: referenceWords[c.refIndex]?.word ?? '',
+      rule: c.rules[0],
+      measuredDb: c.measuredDb ?? 0,
+      baselineDb: c.baselineDb ?? 0,
+      requiredDb: c.requiredDb ?? 0,
+      severity: c.outcome === 'absent' ? 'severe' : 'mild',
+    })
+  }
   return alerts
 }

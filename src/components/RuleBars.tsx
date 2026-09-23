@@ -69,8 +69,12 @@ export function RuleBars({
                 style={{ right: `${requiredShare}%` }}
               />
             )}
+            {/* A ruling the reciter seems to have left short, marked in the cautionary colour
+                rather than the error one. Live, this is a clock's opinion: the tracker follows
+                loudness, not letters, and can be a word behind. The definite word comes from
+                the analysis after the recording — see the note above the live view. */}
             {meter.state === 'short' && (
-              <span className="absolute inset-y-0 left-0 w-0.5 rounded-full bg-danger" />
+              <span className="absolute inset-y-0 left-0 w-0.5 rounded-full bg-warn" />
             )}
           </span>
         )

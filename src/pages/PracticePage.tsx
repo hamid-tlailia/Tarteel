@@ -11,21 +11,22 @@ import { primaryRule, segmentsToWords, TAJWEED_RULE_MAP, type WordWithRules } fr
 import { normalizeArabic } from '../lib/arabicText'
 import { alignWords, type AlignedWord } from '../lib/alignment'
 import {
-  detectMaddDurationAlertsForced,
-  detectMaddDurationAlertsFromFreeDecode,
+  auditHeldRulesForced,
+  auditHeldRulesFromFreeDecode,
   detectRecitedPace,
+  faultsFrom,
   type AcousticAlert,
 } from '../lib/acousticTajweed'
 import { DEFAULT_PACE_ID, PACES, paceOf, type PaceId, type PaceProfile } from '../lib/recitationPace'
 import { DEFAULT_RECITER_ID, RECITERS, reciterOf } from '../lib/reciters'
 import { buildReferenceTiming } from '../lib/referenceRecitation'
 import { followScore, type ReferenceTiming } from '../lib/referenceTiming'
-import { detectQalqalahIssues, type QalqalahAlert } from '../lib/qalqalah'
+import { auditQalqalah, type QalqalahAlert } from '../lib/qalqalah'
 import { collapseRepeatedWords } from '../lib/repetition'
 import { scoreTranscriptMatch } from '../lib/transcriptMatch'
 import { findPassageDrift, type PassageDrift } from '../lib/passageDrift'
 import { buildCoachTips } from '../lib/coach'
-import { detectGhunnahNasalityAlerts, measureWordTimbre, type NasalityAlert } from '../lib/nasality'
+import { auditGhunnahNasality, measureWordTimbre, type NasalityAlert } from '../lib/nasality'
 import {
   bucketByAyah,
   buildWordVerdicts,
@@ -35,6 +36,15 @@ import {
   type AyahRange,
   type WordVerdict,
 } from '../lib/verdicts'
+import {
+  buildTajweedReport,
+  undecidedWordIndices,
+  UNDECIDED_REASON_AR,
+  type DetectorCheck,
+  type RuleFinding,
+  type TajweedReport,
+} from '../lib/findings'
+import { DEFAULT_RIWAYA_ID, RIWAYAT, riwayaFullNameAr, riwayaOf, type RiwayaId } from '../lib/riwaya'
 import { LiveTajweedTracker, type LiveSnapshot, type LiveWordResult } from '../lib/liveTracker'
 import type { RuleMeter } from '../lib/ruleMeter'
 import { expectedDurationBreakdown } from '../lib/wordTiming'
@@ -101,12 +111,17 @@ function ComparedWords({
   acousticAlerts,
   qalqalahAlerts,
   extraWords,
+  undecidedWords,
 }: {
   verdicts: WordVerdict[]
   referenceWords: WordWithRules[]
   acousticAlerts: AcousticAlert[]
   qalqalahAlerts: QalqalahAlert[]
   extraWords: string[]
+  /** Words carrying at least one ruling nothing could verify. They are not faults, and they
+   * are not clean either — painting them exactly like a verified word was the quiet overclaim
+   * this marking removes. */
+  undecidedWords: Set<number>
 }) {
   const acousticByRefIndex = useMemo(() => new Map(acousticAlerts.map((a) => [a.refIndex, a])), [acousticAlerts])
   const qalqalahRefIndices = useMemo(() => new Set(qalqalahAlerts.map((a) => a.refIndex)), [qalqalahAlerts])
@@ -176,8 +191,20 @@ function ComparedWords({
           )
         }
 
+        // A dotted underline for a word whose ruling nobody could check — distinct from the
+        // wavy underlines that mean a fault, and explained in the legend below.
+        const undecided = undecidedWords.has(v.refIndex)
         return (
-          <span key={v.refIndex} className="px-1.5 py-0.5" style={tajweedColor ? { color: tajweedColor } : undefined} title={confidenceLabel || undefined}>
+          <span
+            key={v.refIndex}
+            className={clsx('px-1.5 py-0.5', undecided && 'underline decoration-dotted decoration-from-font underline-offset-4')}
+            style={tajweedColor ? { color: tajweedColor } : undefined}
+            title={
+              undecided
+                ? `${confidenceLabel} — لم نتمكّن من التحقّق من حكم التجويد في هذه الكلمة`.trim()
+                : confidenceLabel || undefined
+            }
+          >
             {refWord?.word}
           </span>
         )
@@ -421,6 +448,24 @@ export function PracticePage() {
   const [acousticAlerts, setAcousticAlerts] = useState<AcousticAlert[]>([])
   const [qalqalahAlerts, setQalqalahAlerts] = useState<QalqalahAlert[]>([])
   const [nasalityAlerts, setNasalityAlerts] = useState<NasalityAlert[]>([])
+  /** Everything the acoustic checks examined, pass or fail — the evidence the report is built
+   * from. Keeping the passes is what lets the app distinguish "verified" from "unexamined";
+   * see findings.ts. */
+  const [checks, setChecks] = useState<DetectorCheck[]>([])
+  /**
+   * The riwāya being judged by. Only Ḥafṣ is supported, and saying which one out loud is part
+   * of the judgement: the text, the derived rules and the madd measures are all his. A reader
+   * by Warsh is told the app cannot grade them rather than graded by the wrong book.
+   */
+  const [riwayaId, setRiwayaId] = useState<RiwayaId>(() => {
+    try {
+      const stored = localStorage.getItem('wartil-riwaya')
+      if (stored && RIWAYAT.some((r) => r.id === stored)) return stored as RiwayaId
+    } catch {
+      // Blocked storage — the default is fine.
+    }
+    return DEFAULT_RIWAYA_ID
+  })
   /**
    * The pace being recited in. It is not a preference about strictness — it decides what the
    * rules actually require, since the ʿāriḍ is two ḥarakāt in ḥadr and six in taḥqīq. Kept
@@ -464,10 +509,19 @@ export function PracticePage() {
   /** Whether the hold detector actually received audio during the last recitation. Its
    * absence silences the per-ruling bars completely, so it is reported rather than guessed. */
   const [liveAudioSignal, setLiveAudioSignal] = useState<boolean | null>(null)
-  /** The most recent rule the reciter passed over, shown while they are still reading. */
-  const [liveMiss, setLiveMiss] = useState<
-    { index: number; rule: TajweedRuleId; kind: 'madd' | 'ghunnah'; severity: 'mild' | 'severe'; at: number } | null
-  >(null)
+  /**
+   * Rulings the live timing tracker thinks were passed over, held back until the ayah they
+   * belong to is finished.
+   *
+   * They used to appear the instant the word closed, worded as a verdict — «مرّت بلا أداء».
+   * But this tracker only watches loudness and the clock: it does not know which letter it is
+   * hearing, and it can be a word or two out of step with the reciter. Interrupting a correct
+   * recitation with a confident accusation is the worst thing the app can do, so the live view
+   * now shows progress and timing only, and the naming waits for the end of the ayah — where
+   * it is offered as a provisional note, to be confirmed or withdrawn by the analysis. */
+  const [liveNotes, setLiveNotes] = useState<
+    { ayahIndex: number; index: number; rule: TajweedRuleId; kind: 'madd' | 'ghunnah'; severity: 'mild' | 'severe' }[]
+  >([])
   useEffect(() => {
     // The ayah objects carry the reciter's audio URLs, so the data layer has to know before
     // anything is fetched — and its cache has to be dropped when this changes.
@@ -486,6 +540,14 @@ export function PracticePage() {
       // Not worth surfacing: the choice simply will not be remembered next visit.
     }
   }, [paceId])
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('wartil-riwaya', riwayaId)
+    } catch {
+      // Not worth surfacing.
+    }
+  }, [riwayaId])
 
   /** The filled part of each ruling's bar, written to directly each animation frame. */
   const holdFillRefs = useRef<(HTMLSpanElement | null)[]>([])
@@ -605,7 +667,13 @@ export function PracticePage() {
 
   const meta = surahs.find((s) => s.number === surahNumber)
 
-  const score = useMemo(() => {
+  /**
+   * How much of the *text* was said as written. Not a tajweed result, and no longer presented
+   * as one: Whisper agreeing that a word was said proves the word, never its ruling. «الٓمٓ»
+   * read with no madd at all is the right word and a broken ruling, and this number is 100%
+   * for it. The rulings are counted separately, below.
+   */
+  const wordScore = useMemo(() => {
     if (!wordVerdicts) return null
     const reached = wordVerdicts.filter((v) => v.status !== 'unreached')
     const correct = reached.filter((v) => v.status === 'correct').length
@@ -613,9 +681,63 @@ export function PracticePage() {
     return { correct, total, accuracy: total === 0 ? 0 : Math.round((correct / total) * 100) }
   }, [wordVerdicts])
 
-  /** Rulings broken, as opposed to words misread — the two are counted separately because
-   * they are different failures, and the word score cannot see the first at all. */
-  const tajweedFaultCount = acousticAlerts.length + qalqalahAlerts.length + nasalityAlerts.length
+  /**
+   * Every ruling in what was recited, each either verified, faulted, or explicitly beyond
+   * what this build can verify. Counted, never averaged — an average would have to price an
+   * unverifiable ruling, and there is no honest price for it. See findings.ts.
+   */
+  const report = useMemo<TajweedReport | null>(() => {
+    if (!wordVerdicts) return null
+    return buildTajweedReport({
+      referenceWords,
+      verdicts: wordVerdicts,
+      checks,
+      passageRecognized: passageMatch >= PASSAGE_MATCH_FLOOR,
+      // The same level below which the recorder warns the microphone was too quiet. A
+      // measurement made on it is not evidence of anything.
+      audioUsable: inputRms === null || inputRms >= 0.015,
+    })
+  }, [wordVerdicts, referenceWords, checks, passageMatch, inputRms])
+
+  const undecidedWords = useMemo(() => (report ? undecidedWordIndices(report) : new Set<number>()), [report])
+
+  /**
+   * Live notes whose ayah the reciter has already left — the only ones shown while recording.
+   *
+   * Holding them back is the point: a note about the ayah being recited would arrive while the
+   * reciter is still in it, from a tracker that cannot see letters. Once they have moved on,
+   * the note is a fair provisional remark, and the analysis after the recording either
+   * confirms it or drops it.
+   */
+  const pendingLiveNotes = useMemo(() => {
+    if (liveNotes.length === 0) return []
+    const cursor = liveSnapshot?.cursor ?? 0
+    const cursorAyah = ayahRanges.findIndex((r) => cursor >= r.start && cursor < r.end)
+    if (cursorAyah < 0) return liveNotes
+    return liveNotes.filter((n) => n.ayahIndex < cursorAyah)
+  }, [liveNotes, liveSnapshot, ayahRanges])
+
+  /** The unverified rulings, gathered by the reason nothing could be said about them — a list
+   * of forty "not measurable" lines is noise, four grouped reasons are a limitation a learner
+   * can understand. */
+  const undecidedGroups = useMemo(() => {
+    const groups = new Map<string, RuleFinding[]>()
+    for (const f of report?.undecided ?? []) {
+      const key = f.reason ?? 'not-measurable'
+      const list = groups.get(key)
+      if (list) list.push(f)
+      else groups.set(key, [f])
+    }
+    return [...groups.entries()]
+  }, [report])
+
+  const flushedNoteCount = useRef(0)
+  useEffect(() => {
+    // One buzz when an ayah closes with something to look at, so the note is not missed by a
+    // reciter whose eyes are on the text.
+    if (pendingLiveNotes.length > flushedNoteCount.current) vibrate([90, 50, 90])
+    flushedNoteCount.current = pendingLiveNotes.length
+  }, [pendingLiveNotes.length])
 
   const coachTips = useMemo(() => {
     if (!wordVerdicts) return []
@@ -634,8 +756,9 @@ export function PracticePage() {
     setAcousticAlerts([])
     setQalqalahAlerts([])
     setNasalityAlerts([])
+    setChecks([])
     setRecitedPace(null)
-    setLiveMiss(null)
+    setLiveNotes([])
     setFollow(null)
     setInputRms(null)
     setDrift(null)
@@ -753,22 +876,46 @@ export function PracticePage() {
 
     // Forced-alignment timing (precise, from the known text) is preferred; fall back to
     // the free decode's approximate word timestamps when it isn't available this time.
-    const acoustic = resultTimings
-      ? detectMaddDurationAlertsForced(referenceWords, resultTimings, correctRefIndices, paceId, reference)
-      : detectMaddDurationAlertsFromFreeDecode(result, referenceWords, collapsed.chunks, correctRefIndices, paceId)
+    //
+    // Both paths now return the whole audit — every ruling examined, with what was found and
+    // why — and the alerts are the faults inside it. The passes matter as much as the faults:
+    // without them there is no telling a verified ruling from one nothing could reach.
+    const durationChecks = resultTimings
+      ? auditHeldRulesForced(referenceWords, resultTimings, correctRefIndices, paceId, reference)
+      : collapsed.chunks.length > 0
+        ? auditHeldRulesFromFreeDecode(result, referenceWords, collapsed.chunks, correctRefIndices, paceId)
+        : []
+    const acoustic = faultsFrom(durationChecks, referenceWords)
     // What the reciter actually read in, whatever they selected — reported back rather than
     // silently graded against the wrong yardstick.
     setRecitedPace(resultTimings ? detectRecitedPace(referenceWords, resultTimings, correctRefIndices, paceId) : null)
     // How closely the learner's reading follows the shape of the reciter's — proportions,
     // not speed, so reading slower than the shaykh is not itself a divergence.
     setFollow(resultTimings && reference ? followScore(referenceWords, resultTimings, reference) : null)
-    const qalqalah = resultTimings ? detectQalqalahIssues(audioForAnalysis, referenceWords, resultTimings, correctRefIndices) : []
+    const qalqalahChecks = resultTimings
+      ? auditQalqalah(audioForAnalysis, referenceWords, resultTimings, correctRefIndices)
+      : []
     // Judged against this reciter's own non-nasal words in this same recording — absolute
     // levels say nothing across microphones and voices.
-    const nasality = detectGhunnahNasalityAlerts(referenceWords, timbre, correctRefIndices)
+    const nasalityChecks = auditGhunnahNasality(referenceWords, timbre, correctRefIndices)
+    const qalqalah = qalqalahChecks
+      .filter((c) => c.outcome === 'short' || c.outcome === 'absent')
+      .map((c) => ({ refIndex: c.refIndex, word: referenceWords[c.refIndex]?.word ?? '' }))
+    const nasality: NasalityAlert[] = nasalityChecks
+      .filter((c) => c.outcome === 'short' || c.outcome === 'absent')
+      .map((c) => ({
+        refIndex: c.refIndex,
+        word: referenceWords[c.refIndex]?.word ?? '',
+        rule: c.rules[0],
+        measuredDb: c.measuredDb ?? 0,
+        baselineDb: c.baselineDb ?? 0,
+        requiredDb: c.requiredDb ?? 0,
+        severity: c.outcome === 'absent' ? 'severe' : 'mild',
+      }))
     setAcousticAlerts(acoustic)
     setQalqalahAlerts(qalqalah)
     setNasalityAlerts(nasality)
+    setChecks([...durationChecks, ...qalqalahChecks, ...nasalityChecks])
 
     if (verdicts.some((v) => v.status === 'wrong') || acoustic.length > 0 || qalqalah.length > 0 || nasality.length > 0) {
       vibrate([80, 60, 80])
@@ -795,12 +942,19 @@ export function PracticePage() {
         referenceWords,
         LIVE_TAU,
         (index, result) => {
-          // A dropped rule gets its own pattern and its own banner: it is the thing worth
-          // interrupting for, and it is what someone deliberately skipping a rule is
-          // waiting to see the app notice.
+          // A ruling that looks passed over is recorded, not announced. This tracker hears
+          // loudness and a clock — not letters — and it can trail the reciter by a word, so
+          // it is in no position to interrupt someone mid-ayah with an accusation. The note
+          // surfaces once its ayah is finished (see pendingLiveNotes), and the buzz is the
+          // same neutral one a timing wobble gets.
           if (result.missed) {
-            vibrate(result.missed.severity === 'severe' ? [120, 60, 120, 60, 120] : [90, 50, 90])
-            setLiveMiss({ index, ...result.missed, at: performance.now() })
+            vibrate(60)
+            const ayahIndex = ayahRanges.findIndex((r) => index >= r.start && index < r.end)
+            setLiveNotes((prev) =>
+              prev.some((n) => n.index === index && n.rule === result.missed!.rule)
+                ? prev
+                : [...prev, { ayahIndex: ayahIndex < 0 ? 0 : ayahIndex, index, ...result.missed! }],
+            )
           } else if (result.status === 'silent') vibrate([100, 50, 100])
           else if (result.status === 'short' || result.status === 'long') vibrate(60)
         },
@@ -955,7 +1109,15 @@ export function PracticePage() {
         <h1 className="text-gilded font-display text-3xl font-bold">التلاوة والتصحيح الصوتي</h1>
         <p className="mt-2 text-sm leading-relaxed text-muted">
           اختر مقطعًا من القرآن، سجّل تلاوتك، وستنكشف كل آية بمقارنتها الحيّة تحت النص الصحيح كلما وصلت إليها أثناء
-          القراءة — بمقارنة صوتية كاملة داخل متصفحك دون رفع صوتك إلى أي خادم.
+          القراءة — كلّه داخل متصفحك دون رفع صوتك إلى أي خادم.
+        </p>
+        {/* What this app does and does not measure, before the reciter records rather than
+            after. The old line promised «مقارنة صوتية كاملة», which no build here delivers:
+            the makhārij, the tafkhīm and the idghāms without ghunnah are not measured at all,
+            and a learner deserves to know that before they trust a green screen. */}
+        <p className="mt-2 text-xs leading-relaxed text-faint">
+          ما يقيسه التطبيق: مطابقة الكلمات للنص، ومقادير المدود والغُنّة والقلقلة زمنًا وصوتًا. وما لا يقيسه: المخارج
+          والصفات والتفخيم والترقيق والإدغام بغير غنّة — تُعرَض عليك كأحكام «غير محسومة» ولا يُحكم لك فيها ولا عليك.
         </p>
         <div className="hair-gold mt-4 max-w-sm" />
       </div>
@@ -1016,6 +1178,51 @@ export function PracticePage() {
             }))}
           />
         </label>
+
+        {/* Which riwāya is being judged by, said out loud and chosen rather than assumed.
+            Everything downstream is Ḥafṣ's: the muṣḥaf text, the rules derived from its
+            script, the ḥarakāt each madd is owed, and every reference recitation offered. A
+            Warsh reading measured by them would not be judged strictly, it would be judged
+            wrongly — so the others are listed and refused instead of silently mis-graded. */}
+        <div>
+          <span className="mb-2 block text-xs font-bold text-faint">الرواية</span>
+          <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+            {RIWAYAT.map((r) => {
+              const active = r.id === riwayaId
+              return (
+                <button
+                  key={r.id}
+                  type="button"
+                  onClick={() => setRiwayaId(r.id)}
+                  aria-pressed={active}
+                  title={r.noteAr}
+                  className={clsx(
+                    'rounded-xl border px-2 py-2 text-center transition',
+                    active
+                      ? 'border-gold bg-accent-soft text-accent shadow-sm'
+                      : 'border-line bg-elevated text-muted hover:border-gold/50',
+                    !r.supported && 'opacity-70',
+                  )}
+                >
+                  <span className="block font-display text-sm font-bold">{r.nameAr}</span>
+                  <span className="mt-0.5 block text-[10px] leading-tight opacity-80">
+                    {r.supported ? r.viaAr : 'غير مدعومة'}
+                  </span>
+                </button>
+              )
+            })}
+          </div>
+          <p
+            className={clsx(
+              'mt-2 rounded-lg px-3 py-2 text-xs leading-relaxed',
+              riwayaOf(riwayaId).supported ? 'text-faint' : 'border border-warn/40 bg-warn-soft font-bold text-warn',
+            )}
+          >
+            {riwayaOf(riwayaId).supported
+              ? riwayaOf(riwayaId).noteAr
+              : `${riwayaOf(riwayaId).noteAr} النص والقرّاء والمقادير في التطبيق كلّها على ${riwayaFullNameAr('hafs')}، فلن يصحّ تقييم تلاوتك بها — اختر حفصًا أو انتظر دعم روايتك.`}
+          </p>
+        </div>
 
         {/* The pace is not a difficulty setting. It decides what the rules require: the madd
             ʿāriḍ is two ḥarakāt in ḥadr and six in taḥqīq, and all three readings are sound. */}
@@ -1089,26 +1296,33 @@ export function PracticePage() {
               )}
             </h2>
 
-            {/* Named the moment it happens, while the reciter can still act on it. */}
-            {recording && liveMiss && (
-              <div
-                key={`${liveMiss.index}-${liveMiss.at}`}
-                className={clsx(
-                  'mb-3 flex items-center gap-2.5 rounded-xl border px-3.5 py-2.5 text-sm font-bold animate-[fadeIn_0.2s_ease]',
-                  liveMiss.severity === 'severe'
-                    ? 'border-danger/50 bg-danger-soft text-danger'
-                    : 'border-warn/50 bg-warn-soft text-warn',
-                )}
-                role="status"
-              >
-                <span aria-hidden className="text-base">
-                  {liveMiss.kind === 'ghunnah' ? '👃' : '〰️'}
-                </span>
-                <span>
-                  {TAJWEED_RULE_MAP[liveMiss.rule]?.nameAr ?? 'الحكم'} في{' '}
-                  <span className="font-quran text-base">«{referenceWords[liveMiss.index]?.word ?? ''}»</span>{' '}
-                  {liveMiss.severity === 'severe' ? 'مرّت بلا أداء — أعِدها' : 'لم تكتمل — أعطها حقّها'}
-                </span>
+            {/* What the live view is, stated where it is read. The colours and the bars below
+                are a timing estimate from loudness alone — no letter has been identified and
+                no sound has been judged. Saying so is what keeps a green bar from being taken
+                for a teacher's approval. */}
+            {recording && (
+              <p className="mb-3 rounded-xl border border-line-soft bg-bg/40 px-3.5 py-2.5 text-xs leading-relaxed text-faint">
+                هذا تتبّع زمني تقديري أثناء القراءة: يقيس مقدار ما تمدّه من زمن، لا صحّة المخرج ولا صفة الحرف.
+                التصحيح الفعلي يظهر بعد انتهاء التسجيل.
+              </p>
+            )}
+
+            {/* Provisional notes about ayahs already finished — never about the one in hand. */}
+            {recording && pendingLiveNotes.length > 0 && (
+              <div className="mb-3 rounded-xl border border-warn/40 bg-warn-soft/70 px-3.5 py-3" role="status">
+                <p className="text-xs font-bold text-warn">ملاحظات مبدئية على ما قرأته (تُراجَع بعد التسجيل)</p>
+                <ul className="mt-1.5 space-y-1 text-sm font-semibold text-warn">
+                  {pendingLiveNotes.slice(-3).map((n) => (
+                    <li key={`${n.index}-${n.rule}`} className="flex items-center gap-2">
+                      <span aria-hidden>{n.kind === 'ghunnah' ? '👃' : '〰️'}</span>
+                      <span>
+                        {TAJWEED_RULE_MAP[n.rule]?.nameAr ?? 'الحكم'} في{' '}
+                        <span className="font-quran text-base">«{referenceWords[n.index]?.word ?? ''}»</span> بدا
+                        {n.severity === 'severe' ? ' غير مُؤدّى' : ' غير مكتمل'} في الزمن
+                      </span>
+                    </li>
+                  ))}
+                </ul>
               </div>
             )}
 
@@ -1131,6 +1345,7 @@ export function PracticePage() {
                             acousticAlerts={acousticAlerts}
                             qalqalahAlerts={qalqalahAlerts}
                             extraWords={extraWords}
+                            undecidedWords={undecidedWords}
                           />
                         ) : (
                           <div className="rounded-xl border border-dashed border-line bg-line-soft/40 px-3 py-2.5 text-sm text-faint">
@@ -1208,7 +1423,17 @@ export function PracticePage() {
           </div>
         )}
 
-        {whisper.status !== 'error' && (
+        {/* An unsupported riwāya stops the analysis rather than grading it by Ḥafṣ's measures.
+            Recording anyway and quietly measuring a Warsh reading against the wrong madds
+            would produce a page full of confident faults the reciter never committed. */}
+        {whisper.status !== 'error' && !riwayaOf(riwayaId).supported && (
+          <div className="rounded-xl border border-warn/40 bg-warn-soft px-4 py-4 text-sm leading-relaxed font-bold text-warn">
+            التقييم متوقّف لأنّ الرواية المختارة ({riwayaFullNameAr(riwayaId)}) غير مدعومة في هذه النسخة. لن نقيس
+            تلاوتك بمقادير رواية أخرى — اختر {riwayaFullNameAr('hafs')} لتسجيل تلاوتك.
+          </div>
+        )}
+
+        {whisper.status !== 'error' && riwayaOf(riwayaId).supported && (
           <div className="space-y-4">
             <Recorder
               recording={recording}
@@ -1227,7 +1452,7 @@ export function PracticePage() {
         )}
       </div>
 
-      {wordVerdicts && score && (
+      {wordVerdicts && wordScore && report && (
         <div className="card-lux space-y-6 p-6">
           {/* A score is only shown when what was heard is actually this passage. Reciting
               something else entirely used to print a confident percentage next to a note
@@ -1267,24 +1492,62 @@ export function PracticePage() {
               )}
             </div>
           ) : (
-            <div className="flex flex-wrap items-center gap-4">
-              <div className="text-gilded font-display text-4xl font-bold">{score.accuracy}%</div>
-              <div className="text-sm font-semibold text-muted">
-                {score.correct} صحيحة من {score.total}
+            /*
+             * Two results, never one number.
+             *
+             * There used to be a single percentage at the top of this card. It could only ever
+             * mean "words Whisper agreed with", but on a screen about tajweed it was read as a
+             * mark for the recitation as a whole — and it was the loudest thing here, so it won
+             * every argument with the caveats beside it. «الٓمٓ» recited with no madd at all
+             * scored 100% on it.
+             *
+             * The text result and the tajweed result are different claims resting on different
+             * evidence, so they are now two panels, and the tajweed one counts rulings instead
+             * of averaging them: an average would have to decide what an unverifiable ruling is
+             * worth, and nothing can honestly answer that.
+             */
+            <div className="space-y-3">
+              <div className="rounded-xl border border-line-soft bg-bg/40 p-4">
+                <div className="flex flex-wrap items-baseline justify-between gap-3">
+                  <h3 className="font-display text-sm font-bold text-accent">الكلمات — ما نُطق كما في المصحف</h3>
+                  <span className="text-gilded font-display text-2xl font-bold">
+                    {wordScore.correct} / {wordScore.total}
+                  </span>
+                </div>
+                <p className="mt-1.5 text-xs leading-relaxed text-faint">
+                  نتيجة نصّية فقط: أنّ الكلمة قُرئت، لا أنّ حكمها أُدّي. أحكام التجويد تُحصى وحدها في الأسفل.
+                </p>
+                {!isConfidenceUsable(wordConfidences) && (
+                  <span className="mt-2 inline-block rounded-full bg-warn-soft px-3 py-1 text-xs font-bold text-warn">
+                    وضع احتياطي: مطابقة نصية فقط
+                  </span>
+                )}
               </div>
-              {/* The percentage counts words *said* correctly, which is not the same as
-                  recited correctly: «الٓمٓ» read with no madd at all is the right word and a
-                  broken ruling. Reporting 100% with nothing beside it hid that entirely. */}
-              {tajweedFaultCount > 0 && (
-                <span className="rounded-full bg-warn-soft px-3 py-1 text-xs font-bold text-warn">
-                  {tajweedFaultCount} {tajweedFaultCount === 1 ? 'مخالفة' : 'مخالفات'} في التجويد
-                </span>
-              )}
-              {!isConfidenceUsable(wordConfidences) && (
-                <span className="rounded-full bg-warn-soft px-3 py-1 text-xs font-bold text-warn">
-                  وضع احتياطي: مطابقة نصية فقط
-                </span>
-              )}
+
+              <div className="rounded-xl border border-line-soft bg-bg/40 p-4">
+                <h3 className="font-display text-sm font-bold text-accent">
+                  أحكام التجويد في ما قرأته: {report.findings.length}
+                </h3>
+                <div className="mt-2.5 grid grid-cols-3 gap-2 text-center">
+                  <div className="rounded-lg border border-ok/40 bg-ok/10 px-2 py-2">
+                    <div className="font-display text-xl font-bold text-ok">{report.met.length}</div>
+                    <div className="mt-0.5 text-[11px] font-bold leading-tight text-ok">تحقّقنا من أدائه</div>
+                  </div>
+                  <div className="rounded-lg border border-warn/40 bg-warn-soft px-2 py-2">
+                    <div className="font-display text-xl font-bold text-warn">{report.faulted.length}</div>
+                    <div className="mt-0.5 text-[11px] font-bold leading-tight text-warn">ظهر فيه خلل</div>
+                  </div>
+                  <div className="rounded-lg border border-line-soft bg-line-soft/40 px-2 py-2">
+                    <div className="font-display text-xl font-bold text-muted">{report.undecided.length}</div>
+                    <div className="mt-0.5 text-[11px] font-bold leading-tight text-muted">غير محسوم</div>
+                  </div>
+                </div>
+                <p className="mt-2.5 text-xs leading-relaxed text-faint">
+                  لا تُجمع هذه الأعداد في نسبة واحدة: «غير محسوم» يعني أنّ الأدلّة الصوتية لم تكفِ للحكم — لا أنّه صحيح
+                  ولا أنّه خطأ — ولا ثمن له في نسبة. التقييم كلّه على رواية{' '}
+                  <span className="font-bold text-muted">{riwayaFullNameAr(riwayaId)}</span>.
+                </p>
+              </div>
             </div>
           )}
 
@@ -1307,6 +1570,7 @@ export function PracticePage() {
               </div>
               <p className="mt-2 text-xs leading-relaxed text-faint">
                 يقيس تناسب مقادير كلماتك بعضها ببعض مقارنةً بالشيخ، لا سرعتك — فالقراءة أبطأ منه بانتظام مطابقة تامة.
+                ونقصان هذا الرقم ليس خطأً في التجويد: لحن القارئ ونَفَسه اختيار مشروع يختلف فيه القرّاء المتمكّنون.
               </p>
             </div>
           )}
@@ -1356,6 +1620,10 @@ export function PracticePage() {
             </span>
             <span className="flex items-center gap-1.5">
               <span className="inline-block h-3 w-3 rounded bg-qalqalah-soft ring-1 ring-qalqalah/40" /> قلقلة غير واضحة
+            </span>
+            <span className="flex items-center gap-1.5">
+              <span className="inline-block h-3 w-3 rounded border-b border-dotted border-muted" /> حكمها غير محسوم (لم
+              نتحقّق منه)
             </span>
           </div>
 
@@ -1446,6 +1714,45 @@ export function PracticePage() {
                 ))}
               </ul>
             </div>
+          )}
+
+          {/*
+            * What the app could not settle — the half of the truth that used to be missing.
+            *
+            * Every one of these rulings previously produced exactly what a correctly performed
+            * ruling produced: nothing. So silence meant "verified" and "unexamined" at once, and
+            * a learner had no way to tell which rulings had actually been listened to. Iẓhār,
+            * the idghāms without ghunnah, tafkhīm and tarqīq, the makhārij — none of them have a
+            * detector here, because deciding them needs to know which letter made which sound,
+            * and this build aligns words.
+            */}
+          {report.undecided.length > 0 && (
+            <details className="rounded-xl border border-line-soft bg-bg/40">
+              <summary className="cursor-pointer px-4 py-3 text-sm font-bold text-muted">
+                🔍 ما لم نستطع الحكم عليه ({report.undecided.length})
+              </summary>
+              <div className="space-y-3 px-4 pb-4">
+                <p className="text-xs leading-relaxed text-faint">
+                  هذه أحكام موجودة في المقطع الذي قرأته، لم تتوفّر لها أدلّة صوتية كافية في هذه النسخة. وجودها هنا لا
+                  يعني أنك أخطأت فيها ولا أنك أدّيتها — يعني أنّ التطبيق لم يستمع إليها، فاعرضها على معلّم أو أعد
+                  المقطع.
+                </p>
+                {undecidedGroups.map(([reason, items]) => (
+                  <div key={reason} className="rounded-lg border border-line-soft/70 bg-line-soft/20 px-3 py-2.5">
+                    <p className="text-xs font-bold text-muted">
+                      {UNDECIDED_REASON_AR[reason as keyof typeof UNDECIDED_REASON_AR] ?? reason}
+                    </p>
+                    <p className="mt-1 text-xs leading-relaxed text-faint">
+                      {items
+                        .slice(0, 10)
+                        .map((f) => `${TAJWEED_RULE_MAP[f.rule]?.nameAr ?? f.rule} في «${f.word}»`)
+                        .join(' · ')}
+                      {items.length > 10 ? ` · و${items.length - 10} غيرها` : ''}
+                    </p>
+                  </div>
+                ))}
+              </div>
+            </details>
           )}
 
           {/* The raw measurements are for whoever is tuning the thresholds, not for a reciter.
