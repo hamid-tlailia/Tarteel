@@ -23,8 +23,10 @@ import { analyzeRecitation } from '../lib/analysis'
 import {
   BUNDLE_FORMAT,
   bundleAudio,
+  encodeWav,
   type AttemptBundle,
 } from '../lib/attemptBundle'
+import { PlayerBar, useClipPlayer, useWavUrl } from '../components/ClipPlayer'
 import {
   bucketByAyah,
   buildWordVerdicts,
@@ -57,6 +59,23 @@ const MIN_SPEECH_SAMPLES = 8000 // ~0.5s at 16kHz, after silence trimming
 const LIVE_TAU = 0.45
 const LIVE_CLOCK_INTERVAL_MS = 500
 
+/**
+ * Somewhere to start.
+ *
+ * The screen used to open on four choices — sūrah, first ayah, last ayah, reference reciter —
+ * before a learner could say a word, and a beginner has no basis for any of them. These are
+ * short, familiar passages that carry the rulings this app can actually measure, so a first
+ * attempt takes one tap. Choosing for yourself is still one tap away, and is what a returning
+ * learner will do.
+ */
+const SUGGESTED: { surah: number; from: number; to: number; nameAr: string; noteAr: string }[] = [
+  { surah: 1, from: 1, to: 7, nameAr: 'الفاتحة', noteAr: 'كاملة — مدود ولام شمسية' },
+  { surah: 112, from: 1, to: 4, nameAr: 'الإخلاص', noteAr: 'قصيرة — إخفاء ومدّ عارض' },
+  { surah: 78, from: 1, to: 5, nameAr: 'النبأ ١–٥', noteAr: 'غُنّة ومدّ واجب متصل' },
+  { surah: 103, from: 1, to: 3, nameAr: 'العصر', noteAr: 'ثلاث آيات — قلقلة ومدّ' },
+  { surah: 97, from: 1, to: 5, nameAr: 'القدر', noteAr: 'إدغام بغنّة ومدود' },
+]
+
 /** The raw measurements behind one word's verdict, surfaced for threshold tuning. */
 interface WordDiagnostic {
   refIndex: number
@@ -81,6 +100,20 @@ function vibrate(pattern: number | number[]) {
   }
 }
 
+/** "Listen to this spot" — the one action that turns a written claim into something the learner
+ * can check for themselves. */
+function ListenHere({ onPlay }: { onPlay: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onPlay}
+      className="float-left ms-2 rounded-lg border border-current/30 px-2 py-0.5 text-[11px] font-bold opacity-80 transition hover:opacity-100"
+    >
+      ▶ اسمع الموضع
+    </button>
+  )
+}
+
 function AyahBadge({ n }: { n: number }) {
   return (
     <span aria-label={`الآية ${n}`} className="relative inline-flex h-7 w-7 shrink-0 items-center justify-center text-[10px] font-black text-gold">
@@ -101,12 +134,17 @@ function ComparedWords({
   qalqalahAlerts,
   extraWords,
   undecidedWords,
+  onPlayWord,
+  activeRefIndex,
 }: {
   verdicts: WordVerdict[]
   referenceWords: WordWithRules[]
   acousticAlerts: AcousticAlert[]
   qalqalahAlerts: QalqalahAlert[]
   extraWords: string[]
+  /** Plays this word alone, when the recording and its timing are both to hand. */
+  onPlayWord?: ((refIndex: number) => void) | null
+  activeRefIndex?: number | null
   /** Words carrying at least one ruling nothing could verify. They are not faults, and they
    * are not clean either — painting them exactly like a verified word was the quiet overclaim
    * this marking removes. */
@@ -115,24 +153,47 @@ function ComparedWords({
   const acousticByRefIndex = useMemo(() => new Map(acousticAlerts.map((a) => [a.refIndex, a])), [acousticAlerts])
   const qalqalahRefIndices = useMemo(() => new Set(qalqalahAlerts.map((a) => a.refIndex)), [qalqalahAlerts])
 
+  /** Wraps a word so tapping it plays that word back — the shortest path from a claim about a
+   * sound to the sound itself. */
+  const playable = (refIndex: number, content: React.ReactNode, extra?: string) =>
+    onPlayWord ? (
+      <button
+        type="button"
+        onClick={() => onPlayWord(refIndex)}
+        title="اسمع هذه الكلمة من تسجيلك"
+        className={clsx(
+          'cursor-pointer rounded-lg transition hover:bg-accent-soft/60',
+          activeRefIndex === refIndex && 'bg-accent-soft ring-1 ring-gold',
+          extra,
+        )}
+      >
+        {content}
+      </button>
+    ) : (
+      content
+    )
+
   return (
     <div className="flex flex-wrap gap-x-1.5 gap-y-2 font-quran text-2xl" dir="rtl">
       {verdicts.map((v) => {
         const refWord = referenceWords[v.refIndex]
-        const salientRule = refWord ? primaryRule(refWord.rules) : undefined
-        const tajweedColor = salientRule ? TAJWEED_RULE_MAP[salientRule].color : null
         const acoustic = acousticByRefIndex.get(v.refIndex)
         const hasQalqalahIssue = qalqalahRefIndices.has(v.refIndex)
         const confidenceLabel = v.confidence !== null ? ` (ثقة ${Math.round(v.confidence * 100)}%)` : ''
 
         if (v.status === 'wrong') {
           return (
-            <span
-              key={v.refIndex}
-              className={clsx('rounded-lg bg-danger-soft px-1.5 py-0.5 text-danger', v.freeStatus === 'missing' && 'line-through decoration-2')}
-              title={`${v.hypGuess ? `سمعت: ${v.hypGuess}` : 'لم يتطابق مع النص'}${confidenceLabel}`}
-            >
-              {refWord?.word}
+            <span key={v.refIndex} className="inline-flex flex-col items-center gap-0.5">
+              {playable(
+                v.refIndex,
+                <span
+                  className={clsx('block rounded-lg bg-danger-soft px-1.5 py-0.5 text-danger', v.freeStatus === 'missing' && 'line-through decoration-2')}
+                  title={`${v.hypGuess ? `سمعت: ${v.hypGuess}` : 'لم يتطابق مع النص'}${confidenceLabel}`}
+                >
+                  {refWord?.word}
+                </span>,
+              )}
+              <span className="font-sans text-[10px] font-bold leading-tight text-danger">لم تُطابق النص</span>
             </span>
           )
         }
@@ -154,17 +215,24 @@ function ComparedWords({
                 : 'المدّ أقصر من المطلوب'
           return (
             <span key={v.refIndex} className="inline-flex flex-col items-center gap-0.5">
-              <span
-                className={clsx(
-                  'rounded-lg px-1.5 py-0.5 underline decoration-wavy',
-                  severe ? 'bg-severe-soft text-severe decoration-severe' : 'bg-warn-soft text-warn decoration-warn',
-                )}
-              >
-                {refWord?.word}
-              </span>
+              {playable(
+                v.refIndex,
+                <span
+                  className={clsx(
+                    'block rounded-lg px-1.5 py-0.5 underline decoration-wavy',
+                    severe ? 'bg-severe-soft text-severe decoration-severe' : 'bg-warn-soft text-warn decoration-warn',
+                  )}
+                >
+                  {refWord?.word}
+                </span>,
+              )}
+              {/* The colour says a signal fired; the words say which ruling and how sure we are.
+                  A learner reading colour alone cannot tell a ruling's own hue in the muṣḥaf
+                  above from a verdict on their performance here. */}
               <span className={clsx('font-sans text-[10px] font-bold leading-tight', severe ? 'text-severe' : 'text-warn')}>
                 {ruleName}: {fault}
               </span>
+              <span className="font-sans text-[9px] font-semibold leading-tight text-faint">إشارة صوتية تقديرية</span>
             </span>
           )
         }
@@ -172,29 +240,52 @@ function ComparedWords({
         if (hasQalqalahIssue) {
           return (
             <span key={v.refIndex} className="inline-flex flex-col items-center gap-0.5">
-              <span className="rounded-lg bg-qalqalah-soft px-1.5 py-0.5 text-qalqalah underline decoration-wavy decoration-qalqalah">
-                {refWord?.word}
-              </span>
+              {playable(
+                v.refIndex,
+                <span className="block rounded-lg bg-qalqalah-soft px-1.5 py-0.5 text-qalqalah underline decoration-wavy decoration-qalqalah">
+                  {refWord?.word}
+                </span>,
+              )}
               <span className="font-sans text-[10px] font-bold leading-tight text-qalqalah">القلقلة: لم تتضح</span>
+              <span className="font-sans text-[9px] font-semibold leading-tight text-faint">إشارة صوتية تقديرية</span>
             </span>
           )
         }
 
         // A dotted underline for a word whose ruling nobody could check — distinct from the
         // wavy underlines that mean a fault, and explained in the legend below.
+        /*
+         * A matched word is left in plain ink — deliberately.
+         *
+         * It used to be painted in its ruling's own colour, the same hue the muṣḥaf above uses
+         * to say "this word contains a ghunnah". Two different claims in one colour: up there it
+         * names a ruling, down here it would be read as a verdict on how that ruling was
+         * performed, which is precisely what this app cannot say about most of them. The rulings
+         * keep their colours in the reference text; this view colours only what it has actually
+         * measured, and names every state in words.
+         */
         const undecided = undecidedWords.has(v.refIndex)
         return (
-          <span
-            key={v.refIndex}
-            className={clsx('px-1.5 py-0.5', undecided && 'underline decoration-dotted decoration-from-font underline-offset-4')}
-            style={tajweedColor ? { color: tajweedColor } : undefined}
-            title={
-              undecided
-                ? `${confidenceLabel} — لم نتمكّن من التحقّق من حكم التجويد في هذه الكلمة`.trim()
-                : confidenceLabel || undefined
-            }
-          >
-            {refWord?.word}
+          <span key={v.refIndex} className="inline-flex flex-col items-center gap-0.5">
+            {playable(
+              v.refIndex,
+              <span
+                className={clsx(
+                  'block px-1.5 py-0.5 text-ink',
+                  undecided && 'underline decoration-dotted decoration-from-font underline-offset-4 decoration-muted',
+                )}
+                title={
+                  undecided
+                    ? `تمت مطابقة الكلمة بالنص — لكن حكم التجويد فيها غير محسوم${confidenceLabel}`
+                    : `تمت مطابقة الكلمة بالنص${confidenceLabel}`
+                }
+              >
+                {refWord?.word}
+              </span>,
+            )}
+            {undecided && (
+              <span className="font-sans text-[9px] font-semibold leading-tight text-faint">غير محسوم</span>
+            )}
           </span>
         )
       })}
@@ -491,6 +582,8 @@ export function PracticePage() {
     null,
   )
   const [showDiagnostics, setShowDiagnostics] = useState(false)
+  /** Whether the learner has asked to pick the passage themselves. */
+  const [choosingOwn, setChoosingOwn] = useState(false)
   /**
    * The accredited reciter whose reading is the reference. Beyond being the voice played
    * back, their own timings become the yardstick the learner's madds are judged against —
@@ -594,6 +687,8 @@ export function PracticePage() {
   }, [whisper.load])
 
   const addAttempt = useProgressStore((s) => s.addAttempt)
+  /** The passage last practised, so returning means one tap rather than four choices. */
+  const lastPractised = useProgressStore((s) => s.attempts[s.attempts.length - 1] ?? null)
 
   useEffect(() => {
     fetchSurahList().then(setSurahs)
@@ -705,6 +800,47 @@ export function PracticePage() {
   }, [wordVerdicts, referenceWords, checks, passageMatch, inputRms])
 
   const undecidedWords = useMemo(() => (report ? undecidedWordIndices(report) : new Set<number>()), [report])
+
+  /**
+   * The recording, playable — and playable one word at a time.
+   *
+   * Everything this screen says about a madd or a ghunnah is a claim about a sound that has
+   * already gone. Written advice about a sound the learner cannot re-hear is the weakest kind of
+   * teaching: they have to take it on trust and cannot hear the difference they are being asked
+   * to make. The samples the analysis was made on are still in memory, so they are handed back.
+   */
+  const attemptWav = useMemo(
+    () => (lastAttempt ? encodeWav(lastAttempt.audio, TARGET_SAMPLE_RATE) : null),
+    [lastAttempt],
+  )
+  const attemptUrl = useWavUrl(attemptWav)
+  const player = useClipPlayer(attemptUrl)
+  /** Which word the player is on, so the text marks the word being heard. */
+  const activeWordIndex = useMemo(() => {
+    const range = player.activeRange
+    const timings = lastAttempt?.timings
+    if (!range || !timings) return null
+    const found = timings.findIndex((t) => t && t[0] === range[0] && t[1] === range[1])
+    return found >= 0 ? found : null
+  }, [player.activeRange, lastAttempt])
+  /** Plays one reference word, from the timing the analysis already produced for it. */
+  const playWord = useMemo(() => {
+    const timings = lastAttempt?.timings
+    if (!timings) return null
+    return (refIndex: number) => {
+      const timing = timings[refIndex]
+      if (timing) player.playRange(timing[0], timing[1])
+    }
+  }, [lastAttempt, player])
+  /** Plays a whole ayah: from the first word that has a timing to the last. */
+  const playAyah = useMemo(() => {
+    const timings = lastAttempt?.timings
+    if (!timings) return null
+    return (range: AyahRange) => {
+      const spans = timings.slice(range.start, range.end).filter((t): t is [number, number] => !!t)
+      if (spans.length > 0) player.playRange(spans[0][0], spans[spans.length - 1][1])
+    }
+  }, [lastAttempt, player])
 
   /**
    * Live notes whose ayah the reciter has already left — the only ones shown while recording.
@@ -1149,10 +1285,11 @@ export function PracticePage() {
   return (
     <div className="mx-auto max-w-3xl space-y-7">
       <div>
-        <h1 className="text-gilded font-display text-3xl font-bold">التلاوة والتصحيح الصوتي</h1>
+        <h1 className="text-gilded font-display text-3xl font-bold">التلاوة والمراجعة</h1>
         <p className="mt-2 text-sm leading-relaxed text-muted">
-          اختر مقطعًا من القرآن، سجّل تلاوتك، وستنكشف كل آية بمقارنتها الحيّة تحت النص الصحيح كلما وصلت إليها أثناء
-          القراءة — كلّه داخل متصفحك دون رفع صوتك إلى أي خادم.
+          <span className="font-bold text-muted">متابعة أثناء القراءة، وتحليل أوليّ بعد التسجيل.</span> أثناء التلاوة
+          تتقدّم الآيات معك بتقدير زمني من الميكروفون وحده؛ والحكم على الأحكام يأتي بعد أن تتوقّف. كلّه داخل متصفحك دون
+          رفع صوتك إلى أي خادم.
         </p>
         {/* What this app does and does not measure, before the reciter records rather than
             after. The old line promised «مقارنة صوتية كاملة», which no build here delivers:
@@ -1166,6 +1303,64 @@ export function PracticePage() {
       </div>
 
       <div className="card-lux space-y-4 p-5">
+        {/* One tap to a first attempt. The old screen asked for four decisions before a learner
+            could recite a word, and a beginner has no basis for any of them. */}
+        <div>
+          <div className="mb-2 flex items-center justify-between gap-3">
+            <span className="text-xs font-bold text-faint">المقطع</span>
+            <button
+              type="button"
+              onClick={() => setChoosingOwn((v) => !v)}
+              className="text-xs font-bold text-accent underline decoration-dotted underline-offset-4"
+            >
+              {choosingOwn ? 'المقاطع المقترحة' : 'اختر بنفسي'}
+            </button>
+          </div>
+          {!choosingOwn && (
+            <div className="flex flex-wrap gap-2">
+              {lastPractised && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setSurahNumber(lastPractised.surah)
+                    setFromAyah(lastPractised.ayahFrom)
+                    setToAyah(lastPractised.ayahTo)
+                  }}
+                  className="rounded-xl border border-gold/60 bg-accent-soft px-3 py-2 text-start transition hover:border-gold"
+                >
+                  <span className="block font-display text-sm font-bold text-accent">تابع من حيث وقفت</span>
+                  <span className="mt-0.5 block text-[10px] leading-tight text-accent/80">
+                    {lastPractised.surahName} {lastPractised.ayahFrom}–{lastPractised.ayahTo}
+                  </span>
+                </button>
+              )}
+              {SUGGESTED.map((p) => {
+                const active = p.surah === surahNumber && p.from === fromAyah && p.to === toAyah
+                return (
+                  <button
+                    key={`${p.surah}-${p.from}`}
+                    type="button"
+                    onClick={() => {
+                      setSurahNumber(p.surah)
+                      setFromAyah(p.from)
+                      setToAyah(p.to)
+                    }}
+                    aria-pressed={active}
+                    className={clsx(
+                      'rounded-xl border px-3 py-2 text-start transition',
+                      active ? 'border-gold bg-accent-soft text-accent shadow-sm' : 'border-line bg-elevated text-muted hover:border-gold/50',
+                    )}
+                  >
+                    <span className="block font-display text-sm font-bold">{p.nameAr}</span>
+                    <span className="mt-0.5 block text-[10px] leading-tight opacity-80">{p.noteAr}</span>
+                  </button>
+                )
+              })}
+            </div>
+          )}
+        </div>
+
+        {choosingOwn && (
         <div className="grid gap-4 sm:grid-cols-3">
           <label className="text-sm">
             <span className="mb-1.5 block text-xs font-bold text-faint">السورة</span>
@@ -1195,8 +1390,16 @@ export function PracticePage() {
             />
           </label>
         </div>
+        )}
 
-        <div className="hair-gold" />
+        {/* Everything below decides how the recitation is *measured*, and every one of them has a
+            sound default. Kept out of the way so a first attempt is one tap, and kept reachable
+            because the pace in particular changes what the rules require. */}
+        <details className="rounded-xl border border-line-soft bg-bg/40">
+          <summary className="cursor-pointer px-4 py-2.5 text-xs font-bold text-muted">
+            ⚙︎ إعدادات متقدمة — الرواية، ومرتبة التلاوة، والقارئ المرجع
+          </summary>
+          <div className="space-y-4 p-4 pt-1">
 
         {/* The reciter is not only the voice played back. Their own recording of this passage
             is aligned in the background and becomes the yardstick the madds are measured
@@ -1304,6 +1507,8 @@ export function PracticePage() {
             </button>
           )}
         </div>
+          </div>
+        </details>
       </div>
 
       <div className="card-lux space-y-5 p-6">
@@ -1334,7 +1539,7 @@ export function PracticePage() {
                     <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-danger opacity-75" />
                     <span className="relative inline-flex h-2 w-2 rounded-full bg-danger" />
                   </span>
-                  مباشر
+                  متابعة
                 </span>
               )}
             </h2>
@@ -1389,6 +1594,8 @@ export function PracticePage() {
                             qalqalahAlerts={qalqalahAlerts}
                             extraWords={extraWords}
                             undecidedWords={undecidedWords}
+                            onPlayWord={playWord}
+                            activeRefIndex={activeWordIndex}
                           />
                         ) : (
                           <div className="rounded-xl border border-dashed border-line bg-line-soft/40 px-3 py-2.5 text-sm text-faint">
@@ -1396,7 +1603,36 @@ export function PracticePage() {
                           </div>
                         )}
                       </div>
-                      <AyahBadge n={r.numberInSurah} />
+                      <div className="flex flex-col items-center gap-1">
+                        <AyahBadge n={r.numberInSurah} />
+                        {/* Re-hearing the ayah as a whole, next to the reciter's own reading of
+                            it: the comparison a teacher would make, rather than a sentence about
+                            it. */}
+                        {playAyah && (
+                          <button
+                            type="button"
+                            onClick={() => playAyah(r)}
+                            title="اسمع هذه الآية من تسجيلك"
+                            className="rounded-lg border border-line px-1.5 py-0.5 text-[10px] font-bold text-muted transition hover:border-gold/60 hover:text-accent"
+                          >
+                            ▶ أنت
+                          </button>
+                        )}
+                        {selectedAyahs[idx]?.audioUrl && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              player.stop()
+                              const audio = new Audio(selectedAyahs[idx].audioUrl)
+                              void audio.play()
+                            }}
+                            title={`اسمع ${reciterOf(reciterId).nameAr} يقرأ هذه الآية`}
+                            className="rounded-lg border border-line px-1.5 py-0.5 text-[10px] font-bold text-muted transition hover:border-gold/60 hover:text-accent"
+                          >
+                            🎧 الشيخ
+                          </button>
+                        )}
+                      </div>
                     </div>
                   )
                 }
@@ -1594,6 +1830,17 @@ export function PracticePage() {
             </div>
           )}
 
+          {/* The recording itself, before any of the analysis below. Everything this card says is
+              a claim about a sound, and a claim about a sound the learner cannot re-hear is the
+              weakest teaching there is. */}
+          {passageMatch >= PASSAGE_MATCH_FLOOR && (
+            <PlayerBar
+              player={player}
+              referenceUrl={selectedAyahs.length === 1 ? selectedAyahs[0]?.audioUrl : null}
+              reciterName={reciterOf(reciterId).nameAr}
+            />
+          )}
+
           {/* How closely the reading follows the reference reciter's shape. Reported, never
               scored: a learner reading slower than the shaykh is not diverging, so this
               compares proportions and deliberately ignores speed. */}
@@ -1645,12 +1892,24 @@ export function PracticePage() {
             </div>
           )}
 
-          <div className="flex flex-wrap gap-4 rounded-xl border border-line-soft bg-bg/40 p-3 text-xs font-semibold text-muted">
+          <div className="space-y-2 rounded-xl border border-line-soft bg-bg/40 p-3 text-xs font-semibold text-muted">
+            {/* Which colours mean what, and — more importantly — that they mean something
+                different here from what the same colours mean in the muṣḥaf above. */}
+            <p className="text-[11px] leading-relaxed text-faint">
+              الألوان في المقارنة أعلاه تدلّ على <span className="font-bold">نتيجة القياس</span>، لا على حكم الكلمة.
+              ألوان الأحكام نفسها في «النص المرجعي» في الأعلى.
+            </p>
+            <div className="flex flex-wrap gap-4">
             <span className="flex items-center gap-1.5">
-              <span className="inline-block h-3 w-3 rounded bg-accent-soft ring-1 ring-accent/40" /> صحيحة (لون التجويد إن وُجد)
+              <span className="inline-block h-3 w-3 rounded border border-line bg-elevated" /> تمت مطابقة الكلمة بالنص
             </span>
             <span className="flex items-center gap-1.5">
-              <span className="inline-block h-3 w-3 rounded bg-warn-soft ring-1 ring-warn/40" /> مدّ أقصر من المطلوب
+              <span className="inline-block h-3 w-3 rounded border-b border-dotted border-muted" /> غير محسوم — لم نتحقّق
+              من حكمها
+            </span>
+            <span className="flex items-center gap-1.5">
+              <span className="inline-block h-3 w-3 rounded bg-warn-soft ring-1 ring-warn/40" /> إشارة صوتية تقديرية:
+              مدّ أقصر من المطلوب
             </span>
             <span className="flex items-center gap-1.5">
               <span className="inline-block h-3 w-3 rounded bg-severe-soft ring-1 ring-severe/40" /> مدّ لم يُمدّ إطلاقًا
@@ -1663,11 +1922,9 @@ export function PracticePage() {
             </span>
             <span className="flex items-center gap-1.5">
               <span className="inline-block h-3 w-3 rounded bg-qalqalah-soft ring-1 ring-qalqalah/40" /> قلقلة غير واضحة
+              (إشارة تقديرية)
             </span>
-            <span className="flex items-center gap-1.5">
-              <span className="inline-block h-3 w-3 rounded border-b border-dotted border-muted" /> حكمها غير محسوم (لم
-              نتحقّق منه)
-            </span>
+            </div>
           </div>
 
           {hypothesis && (
@@ -1689,6 +1946,7 @@ export function PracticePage() {
                       a.severity === 'severe' ? 'border-severe/40 bg-severe-soft text-severe' : 'border-warn/40 bg-warn-soft text-warn',
                     )}
                   >
+                    {playWord && <ListenHere onPlay={() => playWord(a.refIndex)} />}
                     {a.kind === 'ghunnah' ? (
                       a.severity === 'severe' ? (
                         <>
@@ -1727,6 +1985,7 @@ export function PracticePage() {
                     key={a.refIndex}
                     className="rounded-xl border border-ghunnah/40 bg-ghunnah-soft p-3.5 text-sm leading-relaxed text-ghunnah"
                   >
+                    {playWord && <ListenHere onPlay={() => playWord(a.refIndex)} />}
                     {a.severity === 'severe' ? (
                       <>
                         كلمة <span className="font-quran font-bold">«{a.word}»</span> فيها{' '}
@@ -1751,6 +2010,7 @@ export function PracticePage() {
               <ul className="space-y-2.5">
                 {qalqalahAlerts.map((a) => (
                   <li key={a.refIndex} className="rounded-xl border border-qalqalah/40 bg-qalqalah-soft p-3.5 text-sm leading-relaxed text-qalqalah">
+                    {playWord && <ListenHere onPlay={() => playWord(a.refIndex)} />}
                     القلقلة في كلمة <span className="font-quran font-bold">«{a.word}»</span> لم تظهر بوضوح — حاول
                     إبراز ارتداد الصوت (النبرة) عند نطق الحرف الساكن.
                   </li>

@@ -16,14 +16,18 @@ const FEATURES = [
   },
   {
     to: '/practice',
-    title: 'صحّح تلاوتك بالذكاء الاصطناعي',
-    desc: 'سجّل تلاوتك وسيقوم نموذج تعرّف صوتي متقدم (Whisper) يعمل داخل متصفحك بمقارنتها بالنص الصحيح، وتمييز الكلمات الخاطئة أو الناقصة فورًا.',
+    /* What it does, not what a reciter might hope it does. The words are matched by a speech
+       model; the tajweed rulings get an approximate acoustic reading after the recording stops,
+       and some of them the app cannot judge at all. Promising instant tajweed correction set a
+       learner up to trust a green screen. */
+    title: 'سجّل تلاوتك وراجعها',
+    desc: 'نموذج تعرّف صوتي (Whisper) يعمل داخل متصفحك يطابق كلماتك بالنص، ثم يقيس بعد التسجيل مقادير المدود والغُنّة والقلقلة قياسًا تقديريًا — ويقول لك صريحًا ما لم يستطع الحكم عليه.',
     Icon: PracticeIcon,
   },
   {
     to: '/progress',
     title: 'تتبّع تقدّمك',
-    desc: 'سجلٌّ لكل محاولات التلاوة ونسب الدقة، والدروس المكتملة، وأيام المواظبة المتتالية.',
+    desc: 'سجلٌّ لمحاولات التلاوة ومطابقتها للنص، والدروس المكتملة، وأيام المواظبة المتتالية.',
     Icon: ProgressIcon,
   },
 ]
@@ -46,8 +50,8 @@ export function HomePage() {
           </p>
           <h1 className="text-gilded font-display text-4xl leading-[1.6] sm:text-5xl">تعلّم التجويد وصحّح تلاوتك</h1>
           <p className="mx-auto mt-5 max-w-2xl text-base leading-relaxed text-muted">
-            منصة تفاعلية فاخرة لتعلّم أحكام التجويد والتشكيل الصحيح، مع تصحيح فوري لتلاوتك عبر ذكاء اصطناعي يعمل بالكامل
-            داخل متصفحك دون رفع صوتك لأي خادم.
+            منصة لتعلّم أحكام التجويد، ومتابعة تلاوتك أثناء القراءة، وتحليلٍ أوليٍّ لها بعد التسجيل — بذكاء اصطناعي
+            يعمل بالكامل داخل متصفحك دون رفع صوتك لأي خادم.
           </p>
           <div className="mt-8 flex flex-wrap items-center justify-center gap-3">
             <Link to="/practice" className="btn-gold">
