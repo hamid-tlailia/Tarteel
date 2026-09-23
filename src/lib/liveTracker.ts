@@ -259,6 +259,7 @@ export class LiveTajweedTracker {
       if (rms < this.wordPeak * DIP_RATIO) this.dipMs += dt
       else this.dipMs = 0
 
+      if (this.onLastWord()) return
       const due = (this.expectedMs[this.cursor] ?? 0) * this.scale
       if (due > 0) {
         if (this.voicedMs >= due * WINDOW_LATEST) this.closeCurrent('window')
@@ -266,7 +267,7 @@ export class LiveTajweedTracker {
       }
     } else if (this.inWord) {
       this.silenceMs += dt
-      if (this.silenceMs >= GAP_MS) this.closeCurrent('heard')
+      if (this.silenceMs >= GAP_MS && !this.onLastWord()) this.closeCurrent('heard')
     }
   }
 
@@ -403,6 +404,21 @@ export class LiveTajweedTracker {
    */
   hasAudioSignal(): boolean {
     return this.sawSamples
+  }
+
+  /**
+   * Whether the reciter is on the passage's final word, which is never closed early.
+   *
+   * There is nothing after it to advance to, so closing it can only produce a verdict before
+   * the reciter has finished — and «الٓمٓ», a whole ayah in one word, is recited as three
+   * letter names with pauses between them. The first of those pauses closed the word after
+   * «أَلِفْ» alone, and the reciter was told the madd lāzim «مرّت بلا أداء» while they were
+   * still drawing breath to perform it. The same happens to any last word held past what its
+   * pace expects. It now waits for the recording to stop, which is the only moment that
+   * really says the reciter is done with it.
+   */
+  private onLastWord(): boolean {
+    return this.cursor >= this.words.length - 1
   }
 
   /** Changes only at the discrete moments listed on `rev`. Cheap enough to poll per frame. */

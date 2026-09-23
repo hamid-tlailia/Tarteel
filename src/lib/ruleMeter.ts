@@ -69,6 +69,17 @@ export function heldRulesOf(word: WordWithRules, paceId?: PaceId): Omit<RuleMete
 const MIN_CREDIBLE_HOLD_MS = 120
 
 /**
+ * How much of a hold may be lost to measurement before it still counts as complete.
+ *
+ * A hold's edges are found by watching the spectrum settle and then move again, sampled in
+ * frames, so a frame or so is trimmed at each end — a madd held for exactly its due measures
+ * a little under it. Without this, «الٓمٓ» held for the full six ḥarakāt came back ten
+ * milliseconds short and was reported as a fault. The same allowance the post-hoc duration
+ * check makes for the same reason (see TIMING_TOLERANCE_MS in acousticTajweed.ts).
+ */
+const HOLD_EDGE_TOLERANCE_MS = 60
+
+/**
  * Matches the holds heard in a word to the rulings the muṣḥaf gives it.
  *
  * Not simply first-to-first. A word's ordinary syllables can hold still for a moment too, so
@@ -110,9 +121,25 @@ export function matchHoldsToRules(
   }
 
   let cursor = 0
-  return rules.map((rule) => {
+  return rules.map((rule, ruleIndex) => {
+    // The ruling is performed by the *longest* compatible hold available to it, not merely
+    // the first. «الٓمٓ» is recited «أَلِفْ… لَامْ… مِيمْ», and the brief steady vowel of «أَلِفْ»
+    // is a credible hold that comes before the madd — taken as the ruling it reported a
+    // properly held madd lāzim as short. An ordinary steady moment is always shorter than a
+    // sound deliberately held for six ḥarakāt, so length is what separates them.
+    //
+    // Order is still kept: a ruling may not take a hold before one already matched, and it
+    // must leave a hold for each ruling that follows it.
+    // Leave a hold for each ruling that follows — but never at the cost of this one. With
+    // fewer holds heard than the word has rulings, reserving starved the earlier ruling and
+    // handed its madd to the later one, so «يَتَسَآءَلُونَ» reported the muttaṣil unperformed
+    // and the ʿāriḍ complete when the reciter had done exactly the reverse. Order decides
+    // first: an earlier ruling always has the first claim.
+    const rulesAfter = rules.length - 1 - ruleIndex
+    const limit = Math.min(candidates.length, Math.max(cursor + 1, candidates.length - rulesAfter))
     let matched: (typeof candidates)[number] | null = null
-    for (let i = cursor; i < candidates.length; i++) {
+    let matchedAt = -1
+    for (let i = cursor; i < limit; i++) {
       const c = candidates[i]
       if (c.durationMs < MIN_CREDIBLE_HOLD_MS && !c.open) continue
       // A nasal hold cannot be a madd and an oral one cannot be a ghunnah. Where the
@@ -122,15 +149,24 @@ export function matchHoldsToRules(
         if (rule.kind === 'ghunnah' && !c.nasal) continue
         if (rule.kind === 'madd' && c.nasal) continue
       }
-      matched = c
-      cursor = i + 1
-      break
+      // A hold still in progress wins outright: the reciter is performing this ruling now,
+      // and the bar must follow the sound rather than some longer one already past.
+      if (c.open) {
+        matched = c
+        matchedAt = i
+        break
+      }
+      if (!matched || c.durationMs > matched.durationMs) {
+        matched = c
+        matchedAt = i
+      }
     }
+    if (matchedAt >= 0) cursor = matchedAt + 1
 
     const heldMs = matched?.durationMs ?? 0
     let state: RuleMeterState
     if (matched) {
-      state = matched.open ? 'active' : heldMs >= rule.requiredMs ? 'complete' : 'short'
+      state = matched.open ? 'active' : heldMs >= rule.requiredMs - HOLD_EDGE_TOLERANCE_MS ? 'complete' : 'short'
     } else if (finished) {
       // The word is over and this ruling never sounded: it was passed over.
       state = 'short'
